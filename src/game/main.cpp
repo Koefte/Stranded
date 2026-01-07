@@ -4,6 +4,7 @@
 
 #include "Camera.hpp" 
 #include "GameObject.hpp"
+#include "AnimatedGameObject.hpp"
 #include "Vector2.hpp"
 #include "Player.hpp"
 
@@ -48,19 +49,36 @@ int main(int argc, char* argv[]) {
     bool running = true;
     SDL_Event event;
 
-    player = new Player({0.0f, 0.0f},{4.0f,4.0f}, "./sprites/Sprite.bmp", renderer, 1);
+    player = new Player({0.0f, 0.0f},{2.0f,2.0f}, "./sprites/Sprite.bmp", renderer, 1);
     
-    camera = new Camera({0.0f, 0.0f}, {WIN_WIDTH, WIN_HEIGHT});
+    camera = new Camera({0.0f, 0.0f}, {WIN_WIDTH, WIN_HEIGHT},1.0f);
     
     camera->follow(player);
     
     gameObjects.push_back(player);
-    gameObjects.push_back(new GameObject({0.0f, 0.0f}, "./sprites/tree.bmp", renderer));
     std::vector<GameObject*> gameObjectsFromTileset = GameObject::fromTileset("./tilesets/tilemap.json","./tilesets/tilemap.bmp", renderer);
     for(GameObject* obj: gameObjectsFromTileset){
         gameObjects.push_back(obj);
     }
+
+    // Make animated object
+    const char* animFrames[] = {
+        "./sprites/1.bmp",
+        "./sprites/2.bmp",
+        "./sprites/3.bmp"
+    };
+
+    AnimatedGameObject* animatedObj = new AnimatedGameObject({300.0f, 300.0f}, {2.0f,2.0f}, animFrames, 3, renderer, 0.2f, 2);
+    gameObjects.push_back(animatedObj);
+
+    Uint64 prev = SDL_GetPerformanceCounter();
+    double freq = static_cast<double>(SDL_GetPerformanceFrequency());
+
     while (running) {
+        Uint64 now = SDL_GetPerformanceCounter();
+        double dt = (now - prev) / freq; // seconds since last frame
+        prev = now;
+
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
                 running = false;
@@ -80,7 +98,7 @@ int main(int argc, char* argv[]) {
             
         }
         for(GameObject* obj: gameObjects){
-            obj->update();
+            obj->update(dt);
         }
         camera->render(renderer,gameObjects);
     }

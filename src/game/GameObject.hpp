@@ -79,7 +79,11 @@ class GameObject{
         return sprite;
     }
 
-    virtual void update(){
+    void setSprite(SDL_Texture* newSprite){
+        this->sprite = newSprite;
+    }
+
+    virtual void update(float dt){
         // To be implemented in subclasses
     }
 
@@ -91,7 +95,7 @@ class GameObject{
         // To be implemented in subclasses
     }
 
-    static std::vector<GameObject*> fromTileset(const char* tilemapPath, const char* tilesetPath, SDL_Renderer* renderer){
+    static std::vector<GameObject*> fromTileset(const char* tilemapPath, const char* tilesetPath, SDL_Renderer* renderer) {
         std::vector<GameObject*> tiles;
         std::ifstream file(tilemapPath);
         if (!file.is_open()) {
@@ -142,7 +146,7 @@ class GameObject{
 
 
 
-                GameObject* gameObj = new GameObject(pos, Vector2{1,1}, tilesetPath, renderer, cutoutBegin, cutoutEnd, 0);
+                GameObject* gameObj = new GameObject(pos,{1.0f,1.0f},  tilesetPath, renderer, cutoutBegin, cutoutEnd, 0);
                 tiles.push_back(gameObj);
             }
         }

@@ -13,6 +13,7 @@ class Camera{
         Vector2 position;
         Vector2 displaySize;
         GameObject* toFollow;
+        float zoomLevel;
 
 
     std::vector<GameObject*> sortByZIndex(std::vector<GameObject*> objs){
@@ -24,9 +25,10 @@ class Camera{
     }
 
     public:
-    Camera(Vector2 pos,Vector2 displaySize){
+    Camera(Vector2 pos,Vector2 displaySize,float zoomLevel){
         this->position = pos;
         this->displaySize = displaySize;
+        this->zoomLevel = zoomLevel;
     }
     void render(SDL_Renderer* renderer,std::vector<GameObject*> gameObjects){
         // Example rendering logic for the camera
@@ -47,8 +49,8 @@ class Camera{
             SDL_Rect destRect = {
                 static_cast<int>(objPos->x - position.x),
                 static_cast<int>(objPos->y - position.y),
-                static_cast<int>(objSize->x),
-                static_cast<int>(objSize->y)
+                static_cast<int>(objSize->x*zoomLevel),
+                static_cast<int>(objSize->y*zoomLevel)
             };
             // Render the object's sprite
             // Assuming GameObject has a method getSprite() that returns SDL_Texture*

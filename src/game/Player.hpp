@@ -35,7 +35,7 @@ public:
         }
     }
 
-    void update() override {
+    void update(float dt) override {
         Vector2* pos = getPosition();
         if (moveUp) pos->y -= speed;
         if (moveDown) pos->y += speed;
