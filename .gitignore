@@ -1,0 +1,13 @@
+/build/
+/.vscode/
+CMakeFiles/
+CMakeCache.txt
+*.user
+*.obj
+*.pdb
+*.exe
+*.log
+*.dll
+/build-msvc
+/build-vs2026
+/vcpkg_installed/
