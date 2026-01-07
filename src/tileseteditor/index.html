@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tile Set Editor</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Tileset Editor</h1>
+        </header>
+        
+        <div class="main-layout">
+            <!-- Tileset Panel -->
+            <aside class="tileset-panel">
+                <h2>Tileset</h2>
+                <input type="file" id="tilesetInput" accept="image/*">
+                <div class="tileset-config">
+                    <label>Tile Width: <input type="number" id="tileWidth" value="32" min="1"></label>
+                    <label>Tile Height: <input type="number" id="tileHeight" value="32" min="1"></label>
+                    <button id="loadTileset">Load Tileset</button>
+                </div>
+                <canvas id="tilesetCanvas"></canvas>
+                <div id="selectedTile">Selected: None</div>
+            </aside>
+            
+            <!-- Map Editor -->
+            <main class="map-panel">
+                <div class="map-controls">
+                    <label>Map Width: <input type="number" id="mapWidth" value="20" min="1"></label>
+                    <label>Map Height: <input type="number" id="mapHeight" value="15" min="1"></label>
+                    <button id="createMap">Create Map</button>
+                    <button id="clearMap">Clear Map</button>
+                    <button id="exportMap">Export JSON</button>
+                    <span class="hint">Tip: Shift + drag to fill a rectangle.</span>
+                </div>
+                <div class="canvas-container">
+                    <canvas id="mapCanvas"></canvas>
+                </div>
+            </main>
+        </div>
+    </div>
+    
+    <script src="script.js"></script>
+</body>
+</html>
