@@ -51,11 +51,15 @@ int main(int argc, char* argv[]) {
     player = new Player({0.0f, 0.0f},{4.0f,4.0f}, "./sprites/Sprite.bmp", renderer, 1);
     
     camera = new Camera({0.0f, 0.0f}, {WIN_WIDTH, WIN_HEIGHT});
+    
     camera->follow(player);
     
     gameObjects.push_back(player);
     gameObjects.push_back(new GameObject({0.0f, 0.0f}, "./sprites/tree.bmp", renderer));
-
+    std::vector<GameObject*> gameObjectsFromTileset = GameObject::fromTileset("./tilesets/tilemap.json","./tilesets/tilemap.bmp", renderer);
+    for(GameObject* obj: gameObjectsFromTileset){
+        gameObjects.push_back(obj);
+    }
     while (running) {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
