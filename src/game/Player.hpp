@@ -11,6 +11,7 @@ class Player : public IAnimatable, public ICollidable {
 private:
     float speed = 5.0f;
     Vector2 prevPosition;  // Track previous frame position
+    Vector2 velocity = {0.0f, 0.0f};  // Current velocity
     bool moveUp = false, moveDown = false, moveLeft = false, moveRight = false;
 
 public:
@@ -68,12 +69,30 @@ public:
             dx = (dx / length) * speed;
             dy = (dy / length) * speed;
 
-            pos->x += dx;
-            pos->y += dy;
+            velocity.x = dx;
+            velocity.y = dy;
+            pos->x += dx * dt;
+            pos->y += dy * dt;
             startAnimation();
         } else {
+            velocity.x = 0.0f;
+            velocity.y = 0.0f;
             stopAnimation();
         }
+    }
+
+    Vector2 getVelocity() const {
+        return velocity;
+    }
+
+    void setVelocity(Vector2 vel) {
+        velocity = vel;
+    }
+
+    void applyVelocity(float dt) {
+        Vector2* pos = getPosition();
+        pos->x += velocity.x * dt;
+        pos->y += velocity.y * dt;
     }
 
     void onCollisionEnter(ICollidable* other) override {

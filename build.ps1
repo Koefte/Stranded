@@ -85,6 +85,12 @@ if (-not $BuildOnly -and -not $RunOnly) {
                 if (Test-Path $sdl2Dir) {
                     $cmakeArgs += "-DSDL2_DIR=$($sdl2Dir -replace '\\','/')"
                 }
+
+                # Also surface SDL2_net when the toolchain is unavailable
+                $sdl2NetDir = Join-Path $localVcpkgPrefix "share/sdl2-net"
+                if (Test-Path $sdl2NetDir) {
+                    $cmakeArgs += "-DSDL2_NET_DIR=$($sdl2NetDir -replace '\\','/')"
+                }
             } else {
                 Write-Warning "No local vcpkg_installed found at $localVcpkgPrefix. SDL2 discovery may fail."
             }
