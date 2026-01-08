@@ -50,9 +50,16 @@ int main(int argc, char* argv[]) {
     bool running = true;
     SDL_Event event;
 
-    player = new Player({0.0f, 0.0f},{2.0f,2.0f}, "./sprites/Sprite.bmp", renderer, 1);
+    const char* playerSpritePaths[] = {
+        "./sprites/Boy_Walk1.bmp",
+        "./sprites/Boy_Walk2.bmp",
+        "./sprites/Boy_Walk3.bmp",
+        "./sprites/Boy_Walk4.bmp"
+    };
+
+    player = new Player({0.0f, 0.0f},{2.0f,2.0f}, playerSpritePaths,4, renderer,0.1f,1);
     
-    camera = new Camera({0.0f, 0.0f}, {WIN_WIDTH, WIN_HEIGHT},1.0f);
+    camera = new Camera({0.0f, 0.0f}, {WIN_WIDTH, WIN_HEIGHT},2.0f);
     
     camera->follow(player);
     
@@ -63,15 +70,16 @@ int main(int argc, char* argv[]) {
         gameObjects.push_back(obj);
     }
 
-    // Make animated object
+    
+
+
+    // Animation example
     const char* animFrames[] = {
         "./sprites/1.bmp",
         "./sprites/2.bmp",
         "./sprites/3.bmp"
     };
 
-
-    // Animation example
     IAnimatable* animatedObj = new IAnimatable({300.0f, 300.0f}, {2.0f,2.0f}, animFrames, 3, renderer, 0.2f, 1);
     gameObjects.push_back(animatedObj);
 

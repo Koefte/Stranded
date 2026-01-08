@@ -2,13 +2,12 @@
 #include "GameObject.hpp"
 #include "Rectangle.hpp"
 
-class ICollidable : public GameObject {
+class ICollidable : virtual public GameObject {
     public:
     ICollidable(Vector2 pos,Vector2 sizeMultiplier,const char* spritePath, SDL_Renderer* renderer,int zIndex = 0)
         : GameObject(pos, sizeMultiplier, spritePath, renderer, zIndex)
     {
-
-    }  
+    }
     
     Rectangle getCollisionBox(){
         return Rectangle{{

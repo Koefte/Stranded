@@ -1,18 +1,34 @@
 #pragma once
 
 #include <SDL.h>
+#include <cmath>
 #include "Vector2.hpp"
 #include "GameObject.hpp"
+#include "IAnimatable.hpp"
 #include "ICollidable.hpp"
 
-class Player : public ICollidable {
+class Player : public IAnimatable, public ICollidable {
 private:
     float speed = 5.0f;
     Vector2 prevPosition;  // Track previous frame position
     bool moveUp = false, moveDown = false, moveLeft = false, moveRight = false;
 
 public:
-    using ICollidable::ICollidable;
+   
+
+    // Construct from individual frame paths
+    Player(
+        Vector2 pos,
+        Vector2 sizeMultiplier,
+        const char* spritePaths[],
+        int frameCount,
+        SDL_Renderer* renderer,
+        float animationStep,
+        int zIndex = 0)
+        : GameObject(pos, sizeMultiplier, spritePaths[0], renderer, zIndex),
+          IAnimatable(pos, sizeMultiplier, spritePaths, frameCount, renderer, animationStep, zIndex),
+          ICollidable(pos, sizeMultiplier, spritePaths[0], renderer, zIndex)
+    {}
 
     void onKeyDown(SDL_Keycode key) override {
         switch (key) {
@@ -35,13 +51,29 @@ public:
     }
 
     void update(float dt) override {
+        IAnimatable::update(dt);  // Call animation update
         Vector2* pos = getPosition();
         prevPosition = *pos;  // Save before movement
-        
-        if (moveUp) pos->y -= speed;
-        if (moveDown) pos->y += speed;
-        if (moveLeft) pos->x -= speed;
-        if (moveRight) pos->x += speed;
+
+        float dx = 0.0f;
+        float dy = 0.0f;
+
+        if (moveUp) dy -= 1.0f;
+        if (moveDown) dy += 1.0f;
+        if (moveLeft) dx -= 1.0f;
+        if (moveRight) dx += 1.0f;
+
+        if (dx != 0.0f || dy != 0.0f) {
+            const float length = std::sqrt((dx * dx) + (dy * dy));
+            dx = (dx / length) * speed;
+            dy = (dy / length) * speed;
+
+            pos->x += dx;
+            pos->y += dy;
+            startAnimation();
+        } else {
+            stopAnimation();
+        }
     }
 
     void onCollisionEnter(ICollidable* other) override {
@@ -49,4 +81,6 @@ public:
         *pos = prevPosition;  // Revert to last valid position
         SDL_Log("Player collided!");
     }
+
+    
 };

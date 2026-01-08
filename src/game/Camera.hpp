@@ -34,8 +34,11 @@ class Camera{
         // Example rendering logic for the camera
         if(toFollow){
             Vector2* followPos = toFollow->getPosition();
-            position.x = followPos->x + toFollow->getSize()->x / 2 - displaySize.x / 2;
-            position.y = followPos->y + toFollow->getSize()->y / 2 - displaySize.y / 2;
+            // Adjust display size by zoom level to center correctly
+            float effectiveDisplayWidth = displaySize.x / zoomLevel;
+            float effectiveDisplayHeight = displaySize.y / zoomLevel;
+            position.x = followPos->x + toFollow->getSize()->x / 2 - effectiveDisplayWidth / 2;
+            position.y = followPos->y + toFollow->getSize()->y / 2 - effectiveDisplayHeight / 2;
         }
         
         SDL_SetRenderDrawColor(renderer, 0, 0, 255, 255); // Blue background
@@ -46,11 +49,13 @@ class Camera{
         for(GameObject* obj: gameObjects){
             Vector2* objPos = obj->getPosition();
             Vector2* objSize = obj->getSize();
+            
+            // Apply zoom to position and size
             SDL_Rect destRect = {
-                static_cast<int>(objPos->x - position.x),
-                static_cast<int>(objPos->y - position.y),
-                static_cast<int>(objSize->x*zoomLevel),
-                static_cast<int>(objSize->y*zoomLevel)
+                static_cast<int>((objPos->x - position.x) * zoomLevel),
+                static_cast<int>((objPos->y - position.y) * zoomLevel),
+                static_cast<int>(objSize->x * zoomLevel),
+                static_cast<int>(objSize->y * zoomLevel)
             };
             // Render the object's sprite
             // Assuming GameObject has a method getSprite() that returns SDL_Texture*
@@ -63,6 +68,23 @@ class Camera{
 
     void follow(GameObject* obj){
         this->toFollow = obj;
+    }
+
+    // Zoom control methods
+    void setZoom(float zoom){
+        zoomLevel = std::max(0.1f, std::min(zoom, 10.0f)); // Clamp between 0.1 and 10
+    }
+
+    void zoomIn(float amount = 0.1f){
+        setZoom(zoomLevel + amount);
+    }
+
+    void zoomOut(float amount = 0.1f){
+        setZoom(zoomLevel - amount);
+    }
+
+    float getZoom() const {
+        return zoomLevel;
     }
 
 };

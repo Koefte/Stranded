@@ -3,12 +3,13 @@
 #include <map>
 #include "GameObject.hpp"
 
-class IAnimatable : public GameObject{
+class IAnimatable : virtual public GameObject{
     private:
     std::map<int, SDL_Texture*> animationFrames;
     int currentFrame;
     float animationStep;
     float elapsed;
+    bool isAnimating = true;
     public:
     IAnimatable(Vector2 pos,Vector2 sizeMultiplier,const char* spritePath[], int frameCount, SDL_Renderer* renderer,float animationStep, int zIndex = 0)
         : GameObject(pos, sizeMultiplier, spritePath[0], renderer, zIndex)
@@ -26,6 +27,15 @@ class IAnimatable : public GameObject{
         currentFrame = 0;
         this->animationStep = animationStep;
         this->elapsed = 0.0f;
+    }
+
+    void stopAnimation(){
+        isAnimating = false;
+        this->setSprite(animationFrames[0]);
+    }
+
+    void startAnimation(){
+        isAnimating = true;
     }
 
 
