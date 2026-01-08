@@ -1,10 +1,11 @@
 #include <SDL.h>
 #include <iostream>
 #include <vector>
+#include <set>
 
 #include "Camera.hpp" 
 #include "GameObject.hpp"
-#include "AnimatedGameObject.hpp"
+#include "IAnimatable.hpp"
 #include "Vector2.hpp"
 #include "Player.hpp"
 
@@ -56,6 +57,7 @@ int main(int argc, char* argv[]) {
     camera->follow(player);
     
     gameObjects.push_back(player);
+    //From tileset example
     std::vector<GameObject*> gameObjectsFromTileset = GameObject::fromTileset("./tilesets/tilemap.json","./tilesets/tilemap.bmp", renderer);
     for(GameObject* obj: gameObjectsFromTileset){
         gameObjects.push_back(obj);
@@ -68,11 +70,18 @@ int main(int argc, char* argv[]) {
         "./sprites/3.bmp"
     };
 
-    AnimatedGameObject* animatedObj = new AnimatedGameObject({300.0f, 300.0f}, {2.0f,2.0f}, animFrames, 3, renderer, 0.2f, 2);
+
+    // Animation example
+    IAnimatable* animatedObj = new IAnimatable({300.0f, 300.0f}, {2.0f,2.0f}, animFrames, 3, renderer, 0.2f, 1);
     gameObjects.push_back(animatedObj);
+
+    // Collision example object
+    ICollidable* collidableObj = new ICollidable({400.0f, 400.0f}, {2.0f,2.0f}, "./sprites/CollideTest.bmp", renderer, 1);
+    gameObjects.push_back(collidableObj);
 
     Uint64 prev = SDL_GetPerformanceCounter();
     double freq = static_cast<double>(SDL_GetPerformanceFrequency());
+    std::set<std::pair<ICollidable*, ICollidable*>> collisionPairs;
 
     while (running) {
         Uint64 now = SDL_GetPerformanceCounter();
@@ -98,7 +107,34 @@ int main(int argc, char* argv[]) {
             
         }
         for(GameObject* obj: gameObjects){
-            obj->update(dt);
+            obj->update(static_cast<float>(dt));
+            if(ICollidable* collider = dynamic_cast<ICollidable*>(obj)){
+                for(GameObject* otherObj: gameObjects){
+                    if(otherObj == obj) continue;
+                    if(ICollidable* otherCollider = dynamic_cast<ICollidable*>(otherObj)){
+                        Rectangle boxA = collider->getCollisionBox();
+                        Rectangle boxB = otherCollider->getCollisionBox();
+                        if(collisionPairs.find({collider, otherCollider}) != collisionPairs.end() || collisionPairs.find({otherCollider, collider}) != collisionPairs.end()){
+                            if(!boxA.intersects(boxB)){
+                                collider->onCollisionLeave(otherCollider);
+                                otherCollider->onCollisionLeave(collider);
+                                collisionPairs.erase({collider, otherCollider});
+                                collisionPairs.erase({otherCollider, collider});
+                            } else {
+                                collider->onCollisionStay(otherCollider);
+                                otherCollider->onCollisionStay(collider);
+                            }
+                            continue;
+                        }
+                        if(boxA.intersects(boxB)){
+                            SDL_Log("Checking collision between objects");
+                            collider->onCollisionEnter(otherCollider);
+                            otherCollider->onCollisionEnter(collider);
+                            collisionPairs.insert({collider, otherCollider});
+                        }
+                    }
+                }
+            }
         }
         camera->render(renderer,gameObjects);
     }

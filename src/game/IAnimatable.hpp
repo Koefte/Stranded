@@ -3,15 +3,14 @@
 #include <map>
 #include "GameObject.hpp"
 
-class AnimatedGameObject : public GameObject{
+class IAnimatable : public GameObject{
     private:
     std::map<int, SDL_Texture*> animationFrames;
     int currentFrame;
     float animationStep;
     float elapsed;
     public:
-    using GameObject::GameObject;
-    AnimatedGameObject(Vector2 pos,Vector2 sizeMultiplier,const char* spritePath[], int frameCount, SDL_Renderer* renderer,float animationStep, int zIndex = 0)
+    IAnimatable(Vector2 pos,Vector2 sizeMultiplier,const char* spritePath[], int frameCount, SDL_Renderer* renderer,float animationStep, int zIndex = 0)
         : GameObject(pos, sizeMultiplier, spritePath[0], renderer, zIndex)
     {
         for(int i = 0; i < frameCount; i++){

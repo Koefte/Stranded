@@ -3,17 +3,16 @@
 #include <SDL.h>
 #include "Vector2.hpp"
 #include "GameObject.hpp"
+#include "ICollidable.hpp"
 
-class Player : public GameObject {
+class Player : public ICollidable {
 private:
-    const float speed = 5.0f;
-    bool moveUp = false;
-    bool moveDown = false;
-    bool moveLeft = false;
-    bool moveRight = false;
+    float speed = 5.0f;
+    Vector2 prevPosition;  // Track previous frame position
+    bool moveUp = false, moveDown = false, moveLeft = false, moveRight = false;
 
 public:
-    using GameObject::GameObject;
+    using ICollidable::ICollidable;
 
     void onKeyDown(SDL_Keycode key) override {
         switch (key) {
@@ -37,9 +36,17 @@ public:
 
     void update(float dt) override {
         Vector2* pos = getPosition();
+        prevPosition = *pos;  // Save before movement
+        
         if (moveUp) pos->y -= speed;
         if (moveDown) pos->y += speed;
         if (moveLeft) pos->x -= speed;
         if (moveRight) pos->x += speed;
+    }
+
+    void onCollisionEnter(ICollidable* other) override {
+        Vector2* pos = getPosition();
+        *pos = prevPosition;  // Revert to last valid position
+        SDL_Log("Player collided!");
     }
 };
