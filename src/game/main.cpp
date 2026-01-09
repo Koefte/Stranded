@@ -6,12 +6,15 @@
 #include <unordered_map>
 #include <cstring>
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
 
 #include "Camera.hpp" 
 #include "GameObject.hpp"
 #include "IAnimatable.hpp"
 #include "Vector2.hpp"
 #include "Player.hpp"
+#include "Rectangle.hpp"
 
 
 //GAME
@@ -19,6 +22,8 @@ static std::vector<GameObject*> gameObjects;
 static Camera* camera;
 static Player* player;
 static SDL_Renderer* g_renderer = nullptr;
+static std::set<std::pair<int,int>> generatedChunks;
+static const int CHUNK_SIZE_PX = 512; // world-space pixels per chunk
 
 
 // Networking
@@ -29,6 +34,15 @@ static std::vector<IPaddress> clientAddrs;
 static uint32_t clientId = 0;
 static uint32_t inputSeq = 0;
 static std::unordered_map<uint32_t, Player*> remotePlayers;
+
+#pragma pack(push, 1)
+struct ChunkPacket {
+    uint32_t magic; // 'CHNK'
+    int32_t cx;
+    int32_t cy;
+    uint32_t seed;
+};
+#pragma pack(pop)
 
 #pragma pack(push, 1)
 struct InputPacket {
@@ -150,6 +164,7 @@ bool checkCollision(const std::vector<Rectangle>& shapeA,
     
     return false;
 }
+
 
 
 void broadcastSnapshot() {
@@ -289,6 +304,9 @@ int main(int argc, char* argv[]) {
     }
     g_renderer = renderer;
 
+    // Seed randomness for environment variation
+    srand(static_cast<unsigned>(SDL_GetTicks()));
+
     bool running = true;
     SDL_Event event;
 
@@ -299,7 +317,7 @@ int main(int argc, char* argv[]) {
         "./sprites/Boy_Walk4.bmp"
     };
 
-    player = new Player({0.0f, 0.0f},{2.0f,2.0f}, playerSpritePaths,4, renderer,0.1f,1);
+    player = new Player({0.0f, 0.0f},{2.0f,2.0f}, playerSpritePaths,4, renderer,0.1f,2);
     
     camera = new Camera({0.0f, 0.0f}, {WIN_WIDTH, WIN_HEIGHT},2.0f);
     
@@ -312,38 +330,75 @@ int main(int argc, char* argv[]) {
         gameObjects.push_back(remote);
     }
     
-    //From tileset example
-    std::vector<GameObject*> gameObjectsFromTileset = GameObject::fromTileset("./tilesets/tilemap.json","./tilesets/tilemap.bmp", renderer);
-    for(GameObject* obj: gameObjectsFromTileset){
-        gameObjects.push_back(obj);
-    }
+    auto ensureChunksAround = [&](SDL_Renderer* rend, Vector2 playerPos, int radius){
+        int cx = static_cast<int>(std::floor(playerPos.x / CHUNK_SIZE_PX));
+        int cy = static_cast<int>(std::floor(playerPos.y / CHUNK_SIZE_PX));
+        for(int dy = -radius; dy <= radius; ++dy){
+            for(int dx = -radius; dx <= radius; ++dx){
+                int nx = cx + dx;
+                int ny = cy + dy;
+                std::pair<int,int> key{nx, ny};
+                if(generatedChunks.find(key) != generatedChunks.end()) continue;
+                Rectangle area{{nx * static_cast<float>(CHUNK_SIZE_PX), ny * static_cast<float>(CHUNK_SIZE_PX)},
+                               {(nx+1) * static_cast<float>(CHUNK_SIZE_PX), (ny+1) * static_cast<float>(CHUNK_SIZE_PX)}};
+                // Deterministic per-chunk seed
+                uint32_t seed = static_cast<uint32_t>((nx * 73856093) ^ (ny * 19349663) ^ 0x9E3779B9);
+                auto env = GameObject::generateInitialEnvironment(rend, "./tilesets/tilemap.json", "./tilesets/World_GenAtlas.bmp", area, seed);
+                // Append to global render list
+                gameObjects.insert(gameObjects.end(), env.begin(), env.end());
+                generatedChunks.insert(key);
 
-    // Lighthouse with multi-rectangle hitbox
-    // Sprite ~32x64 scaled by 3 => ~96x192
+                // If host, broadcast chunk to clients
+                if (isHost && udpSocket && !clientAddrs.empty()) {
+                    ChunkPacket pkt;
+                    pkt.magic = 0x4B4E4843; // 'CHNK'
+                    pkt.cx = nx;
+                    pkt.cy = ny;
+                    pkt.seed = seed;
+                    UDPpacket* out = SDLNet_AllocPacket(sizeof(pkt));
+                    std::memcpy(out->data, &pkt, sizeof(pkt));
+                    out->len = sizeof(pkt);
+                    for (auto& addr : clientAddrs) {
+                        out->address = addr;
+                        SDLNet_UDP_Send(udpSocket, -1, out);
+                    }
+                    SDLNet_FreePacket(out);
+                }
+            }
+        }
+    };
+
+    // Generate initial chunks around player
+    ensureChunksAround(renderer, *player->getPosition(), 1);
+
+    // Chunks added directly to gameObjects in ensureChunksAround
+
+    
     Vector2 lighthousePos = {600.0f, 200.0f};
-    Vector2 lighthouseSizeMultiplier = {3.0f, 3.0f};
+    Vector2 lighthouseSizeMultiplier = {6.0f, 6.0f};
 
     ICollidable* lighthouse = new ICollidable(
         lighthousePos,
         lighthouseSizeMultiplier,
-        "./sprites/lighthouse.bmp",
+        "./sprites/lighthouse_tower.bmp",
         renderer,
         true,
         1,
         10  // Smaller minClusterSize for more detailed hitboxes
     );
+
+    GameObject* lighthouseGround = new GameObject(
+        {lighthousePos.x, lighthousePos.y},
+        lighthouseSizeMultiplier,
+        "./sprites/lighthouse_ground.bmp",
+        renderer,
+        1
+    );
+
     gameObjects.push_back(lighthouse);
+    gameObjects.push_back(lighthouseGround);
     
 
-    ICollidable* test = new ICollidable(
-        {400.0f, 300.0f}, 
-        {2.0f, 2.0f}, 
-        "./sprites/CollideTest.bmp", 
-        renderer,
-        false,
-        2
-    );
-    gameObjects.push_back(test);
 
     Uint64 prev = SDL_GetPerformanceCounter();
     double freq = static_cast<double>(SDL_GetPerformanceFrequency());
@@ -379,15 +434,63 @@ int main(int argc, char* argv[]) {
             receiveInputs();
         }
         
-        // Sync remote players from network
+        // Sync remote players and receive chunk spawns from host
         if (!isHost && udpSocket) {
-            receiveSnapshot(renderer);
+            // Modified to process both snapshots and chunk packets
+            UDPpacket* in = SDLNet_AllocPacket(2048);
+            while (SDLNet_UDP_Recv(udpSocket, in)) {
+                // Check for chunk packet first
+                if (in->len >= sizeof(ChunkPacket)) {
+                    ChunkPacket cp;
+                    std::memcpy(&cp, in->data, sizeof(ChunkPacket));
+                    if (cp.magic == 0x4B4E4843) { // 'CHNK'
+                        std::pair<int,int> key{cp.cx, cp.cy};
+                        if (generatedChunks.find(key) == generatedChunks.end()) {
+                            Rectangle area{{cp.cx * static_cast<float>(CHUNK_SIZE_PX), cp.cy * static_cast<float>(CHUNK_SIZE_PX)},
+                                           {(cp.cx+1) * static_cast<float>(CHUNK_SIZE_PX), (cp.cy+1) * static_cast<float>(CHUNK_SIZE_PX)}};
+                            auto env = GameObject::generateInitialEnvironment(renderer, "./tilesets/tilemap.json", "./tilesets/World_GenAtlas.bmp", area, cp.seed);
+                            gameObjects.insert(gameObjects.end(), env.begin(), env.end());
+                            generatedChunks.insert(key);
+                        }
+                        continue; // processed
+                    }
+                }
+
+                // Otherwise try to interpret as snapshot
+                if (in->len >= sizeof(SnapshotHeader)) {
+                    SnapshotHeader header;
+                    std::memcpy(&header, in->data, sizeof(header));
+                    size_t expected = sizeof(header) + header.playerCount * sizeof(PlayerState);
+                    if (in->len >= expected) {
+                        PlayerState* states = reinterpret_cast<PlayerState*>(in->data + sizeof(header));
+                        for (uint32_t i = 0; i < header.playerCount; ++i) {
+                            if (states[i].id == clientId) {
+                                Vector2* pos = player->getPosition();
+                                pos->x = states[i].x;
+                                pos->y = states[i].y;
+                                player->setVelocity({states[i].vx, states[i].vy});
+                            } else {
+                                Player* remote = getOrCreateRemotePlayer(states[i].id);
+                                if (!remote) continue;
+                                Vector2* rpos = remote->getPosition();
+                                rpos->x = states[i].x;
+                                rpos->y = states[i].y;
+                                remote->setVelocity({states[i].vx, states[i].vy});
+                            }
+                        }
+                        continue;
+                    }
+                }
+            }
+            SDLNet_FreePacket(in);
             // Interpolate remote players using velocity between snapshots
             for (auto& [id, remote] : remotePlayers) {
                 remote->applyVelocity(static_cast<float>(dt));
             }
         }
-        
+        // Ensure environment chunks exist around current player location
+        ensureChunksAround(renderer, *player->getPosition(), 1);
+
         for(GameObject* obj: gameObjects){
             obj->update(static_cast<float>(dt));
             if(ICollidable* collider = dynamic_cast<ICollidable*>(obj)){
