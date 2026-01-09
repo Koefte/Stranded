@@ -27,8 +27,8 @@ if (-not $toolchain) {
 # Candidate SDL2 bin dirs (computed later after $buildDir is known)
 $sdl2BinCandidates = @()
 
-Write-Host "SDL2 Starter Build Script"
-Write-Host "=========================" -ForegroundColor Cyan
+Write-Host "Stranded Build Script" -ForegroundColor Cyan
+Write-Host "=====================" -ForegroundColor Cyan
 Write-Host "Build Type: $buildType"
 Write-Host ""
 
@@ -55,7 +55,6 @@ function Resolve-GeneratorAndDirs {
 
 $attempts = Resolve-GeneratorAndDirs -Gen $Generator
 
-# Try configure with preferred generator(s)
 # Configure
 if (-not $BuildOnly -and -not $RunOnly) {
     Write-Host "Configuring CMake..." -ForegroundColor Green
@@ -86,10 +85,15 @@ if (-not $BuildOnly -and -not $RunOnly) {
                     $cmakeArgs += "-DSDL2_DIR=$($sdl2Dir -replace '\\','/')"
                 }
 
-                # Also surface SDL2_net when the toolchain is unavailable
+                # Surface SDL2_net and SDL2_image when the toolchain is unavailable
                 $sdl2NetDir = Join-Path $localVcpkgPrefix "share/sdl2-net"
                 if (Test-Path $sdl2NetDir) {
                     $cmakeArgs += "-DSDL2_NET_DIR=$($sdl2NetDir -replace '\\','/')"
+                }
+
+                $sdl2ImageDir = Join-Path $localVcpkgPrefix "share/sdl2-image"
+                if (Test-Path $sdl2ImageDir) {
+                    $cmakeArgs += "-DSDL2_IMAGE_DIR=$($sdl2ImageDir -replace '\\','/')"
                 }
             } else {
                 Write-Warning "No local vcpkg_installed found at $localVcpkgPrefix. SDL2 discovery may fail."

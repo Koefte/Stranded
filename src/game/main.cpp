@@ -5,6 +5,7 @@
 #include <set>
 #include <unordered_map>
 #include <cstring>
+#include <algorithm>
 
 #include "Camera.hpp" 
 #include "GameObject.hpp"
@@ -131,6 +132,26 @@ void receiveInputs() {
     SDLNet_FreePacket(in);
 }
 
+
+
+// Helper function to check collision between two collision shapes (handles single and multi-rectangle)
+bool checkCollision(const std::vector<Rectangle>& shapeA, 
+                    const std::vector<Rectangle>& shapeB) {
+    
+    
+    // Check all combinations of rectangles
+    for (const auto& rectA : shapeA) {
+        for (const auto& rectB : shapeB) {
+            if (rectA.intersects(rectB)) {
+                return true;
+            }
+        }
+    }
+    
+    return false;
+}
+
+
 void broadcastSnapshot() {
     if (!udpSocket || !isHost || clientAddrs.empty()) return;
     
@@ -245,7 +266,7 @@ int main(int argc, char* argv[]) {
     }
 
     SDL_Window* window = SDL_CreateWindow(
-        "SDL2 Starter",
+        "Fish Game  ",
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
         WIN_WIDTH,
@@ -297,23 +318,36 @@ int main(int argc, char* argv[]) {
         gameObjects.push_back(obj);
     }
 
-    // Animation example
-    const char* animFrames[] = {
-        "./sprites/1.bmp",
-        "./sprites/2.bmp",
-        "./sprites/3.bmp"
-    };
+    // Lighthouse with multi-rectangle hitbox
+    // Sprite ~32x64 scaled by 3 => ~96x192
+    Vector2 lighthousePos = {600.0f, 200.0f};
+    Vector2 lighthouseSizeMultiplier = {3.0f, 3.0f};
 
-    IAnimatable* animatedObj = new IAnimatable({300.0f, 300.0f}, {2.0f,2.0f}, animFrames, 3, renderer, 0.2f, 1);
-    gameObjects.push_back(animatedObj);
+    ICollidable* lighthouse = new ICollidable(
+        lighthousePos,
+        lighthouseSizeMultiplier,
+        "./sprites/lighthouse.bmp",
+        renderer,
+        true,
+        1,
+        10  // Smaller minClusterSize for more detailed hitboxes
+    );
+    gameObjects.push_back(lighthouse);
+    
 
-    // Collision example object
-    ICollidable* collidableObj = new ICollidable({400.0f, 400.0f}, {2.0f,2.0f}, "./sprites/CollideTest.bmp", renderer, 1);
-    gameObjects.push_back(collidableObj);
+    ICollidable* test = new ICollidable(
+        {400.0f, 300.0f}, 
+        {2.0f, 2.0f}, 
+        "./sprites/CollideTest.bmp", 
+        renderer,
+        false,
+        2
+    );
+    gameObjects.push_back(test);
 
     Uint64 prev = SDL_GetPerformanceCounter();
     double freq = static_cast<double>(SDL_GetPerformanceFrequency());
-    std::set<std::pair<ICollidable*, ICollidable*>> collisionPairs;
+    std::set<std::pair<ICollidable*, ICollidable*>> collisionPairs; // TODO: Make this work
 
     while (running) {
         Uint64 now = SDL_GetPerformanceCounter();
@@ -327,8 +361,10 @@ int main(int argc, char* argv[]) {
                 running = false;
             }
             else if(event.type == SDL_KEYDOWN){
+                
                 // Only local player handles local input
                 player->onKeyDown(event.key.keysym.sym);
+                
             }
             else if(event.type == SDL_KEYUP){
                 player->onKeyUp(event.key.keysym.sym);
@@ -358,10 +394,13 @@ int main(int argc, char* argv[]) {
                 for(GameObject* otherObj: gameObjects){
                     if(otherObj == obj) continue;
                     if(ICollidable* otherCollider = dynamic_cast<ICollidable*>(otherObj)){
-                        Rectangle boxA = collider->getCollisionBox();
-                        Rectangle boxB = otherCollider->getCollisionBox();
+                        auto shapeA = collider->getCollisionBox();
+                        auto shapeB = otherCollider->getCollisionBox();
+                        
+                        bool isColliding = checkCollision(shapeA, shapeB);
+                        
                         if(collisionPairs.find({collider, otherCollider}) != collisionPairs.end() || collisionPairs.find({otherCollider, collider}) != collisionPairs.end()){
-                            if(!boxA.intersects(boxB)){
+                            if(!isColliding){
                                 collider->onCollisionLeave(otherCollider);
                                 otherCollider->onCollisionLeave(collider);
                                 collisionPairs.erase({collider, otherCollider});
@@ -372,7 +411,7 @@ int main(int argc, char* argv[]) {
                             }
                             continue;
                         }
-                        if(boxA.intersects(boxB)){
+                        if(isColliding){
                             SDL_Log("Checking collision between objects");
                             collider->onCollisionEnter(otherCollider);
                             otherCollider->onCollisionEnter(collider);
@@ -389,6 +428,8 @@ int main(int argc, char* argv[]) {
         }
         
         camera->render(renderer,gameObjects);
+
+        
     }
 
     if (udpSocket) {

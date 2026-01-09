@@ -83,6 +83,15 @@ class Camera{
         setZoom(zoomLevel - amount);
     }
 
+    Vector2 getPosition() const {
+        return position;
+    }
+
+    Vector2 getViewSize() const {
+        return displaySize;
+    }
+
+
     float getZoom() const {
         return zoomLevel;
     }

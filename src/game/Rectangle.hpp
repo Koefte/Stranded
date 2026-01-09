@@ -4,7 +4,7 @@
 struct Rectangle{
     Vector2 begin;
     Vector2 end;
-    bool intersects(const Rectangle& other){
+    bool intersects(const Rectangle& other) const{
         return !(end.x < other.begin.x || 
                  begin.x > other.end.x || 
                  end.y < other.begin.y || 

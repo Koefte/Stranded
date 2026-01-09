@@ -9,7 +9,7 @@
 
 class Player : public IAnimatable, public ICollidable {
 private:
-    float speed = 5.0f;
+    float speed = 200.0f;  // pixels per second
     Vector2 prevPosition;  // Track previous frame position
     Vector2 velocity = {0.0f, 0.0f};  // Current velocity
     bool moveUp = false, moveDown = false, moveLeft = false, moveRight = false;
@@ -28,7 +28,7 @@ public:
         int zIndex = 0)
         : GameObject(pos, sizeMultiplier, spritePaths[0], renderer, zIndex),
           IAnimatable(pos, sizeMultiplier, spritePaths, frameCount, renderer, animationStep, zIndex),
-          ICollidable(pos, sizeMultiplier, spritePaths[0], renderer, zIndex)
+          ICollidable(pos, sizeMultiplier, spritePaths[0], renderer, false, zIndex)
     {}
 
     void onKeyDown(SDL_Keycode key) override {

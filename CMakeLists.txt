@@ -1,24 +1,39 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.10)
 
-project(StrandedSDL2 LANGUAGES CXX)
+project(Stranded)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Ensure MSVC uses DLL runtime to avoid CRT conflicts (LNK4098)
+if (MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
+endif()
+
+# Use vcpkg CONFIG packages
 find_package(SDL2 CONFIG REQUIRED)
 find_package(SDL2_net CONFIG REQUIRED)
-find_package(nlohmann_json CONFIG REQUIRED)
+find_package(SDL2_image CONFIG REQUIRED)
 
-add_executable(stranded
-    src/game/main.cpp
+# Sources
+file(GLOB_RECURSE SOURCES "src/**/*.cpp")
+
+add_executable(Stranded ${SOURCES})
+
+# Link imported targets
+target_link_libraries(Stranded PRIVATE
+    SDL2::SDL2
+    SDL2::SDL2main
+    SDL2_net::SDL2_net
+    SDL2_image::SDL2_image
 )
 
-target_link_libraries(stranded PRIVATE SDL2::SDL2main SDL2::SDL2 SDL2_net::SDL2_net nlohmann_json::nlohmann_json)
-target_compile_features(stranded PRIVATE cxx_std_17)
-
-if(MSVC)
-    target_compile_options(stranded PRIVATE /W4 /permissive-)
-else()
-    target_compile_options(stranded PRIVATE -Wall -Wextra -Wpedantic)
-endif()
+# Copy assets to build output
+add_custom_command(TARGET Stranded POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/sprites
+    $<TARGET_FILE_DIR:Stranded>/sprites
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/tilesets
+    $<TARGET_FILE_DIR:Stranded>/tilesets
+)
