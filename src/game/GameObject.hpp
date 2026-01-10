@@ -300,6 +300,10 @@ class GameObject{
         return &position;
     }
 
+    Vector2 getCenteredPosition() {
+        return {position.x + size.x / 2.0f, position.y + size.y / 2.0f};
+    }
+
     Vector2* getSize() {
         return &size;
     }

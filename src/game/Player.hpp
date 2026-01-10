@@ -41,7 +41,7 @@ public:
         }
     }
 
-    void onKeyUp(SDL_Keycode key) {
+    void onKeyUp(SDL_Keycode key) override {
         switch (key) {
             case SDLK_w: moveUp = false; break;
             case SDLK_s: moveDown = false; break;
@@ -99,6 +99,13 @@ public:
         Vector2* pos = getPosition();
         *pos = prevPosition;  // Revert to last valid position
         SDL_Log("Player collided!");
+    }
+
+    void onCollisionStay(ICollidable* other) override {
+        // Optional: Handle continuous collision
+        Vector2* pos = getPosition();
+        *pos = prevPosition;  // Revert to last valid position
+        
     }
 
     

@@ -15,12 +15,15 @@
 #include "Vector2.hpp"
 #include "Player.hpp"
 #include "Rectangle.hpp"
+#include "Boat.hpp"
+#include "DebugObject.hpp"
 
 
 //GAME
 static std::vector<GameObject*> gameObjects;
 static Camera* camera;
 static Player* player;
+static Boat* boat;
 static SDL_Renderer* g_renderer = nullptr;
 static std::set<std::pair<int,int>> generatedChunks;
 static const int CHUNK_SIZE_PX = 512; // world-space pixels per chunk
@@ -236,6 +239,19 @@ void receiveSnapshot(SDL_Renderer* renderer) {
     SDLNet_FreePacket(in);
 }
 
+float hitBoxDistance(std::vector<Rectangle> shapeA, std::vector<Rectangle> shapeB) {
+    float minDist = std::numeric_limits<float>::max();
+    for (const auto& rectA : shapeA) {
+        for (const auto& rectB : shapeB) {
+            float dist = rectA.dist(rectB);
+            if (dist < minDist) {
+                minDist = dist;
+            }
+        }
+    }
+    return minDist;
+}
+
 int main(int argc, char* argv[]) {
     // Parse command-line args
     for (int i = 1; i < argc; ++i) {
@@ -318,12 +334,23 @@ int main(int argc, char* argv[]) {
     };
 
     player = new Player({0.0f, 0.0f},{2.0f,2.0f}, playerSpritePaths,4, renderer,0.1f,2);
-    
+
+    const char* boatSpritePaths[] = {
+        "./sprites/Boat1.bmp",
+        "./sprites/Boat2.bmp",
+        "./sprites/Boat3.bmp",
+        "./sprites/Boat4.bmp"
+    };
+
+    boat = new Boat({100.0f, 100.0f}, {3.0f, 3.0f}, boatSpritePaths, 4, renderer, 0.2f, 2,SDLK_f);
+   
+
     camera = new Camera({0.0f, 0.0f}, {WIN_WIDTH, WIN_HEIGHT},2.0f);
     
     camera->follow(player);
     
     gameObjects.push_back(player);
+    gameObjects.push_back(boat);
     
     // Add remote players to game objects if they exist
     for (auto& [id, remote] : remotePlayers) {
@@ -417,7 +444,29 @@ int main(int argc, char* argv[]) {
             }
             else if(event.type == SDL_KEYDOWN){
                 
+                if(event.key.keysym.sym == SDLK_0){
+                    SDL_Log("Player position: (%.2f, %.2f)", player->getPosition()->x, player->getPosition()->y);
+                }
+
                 // Only local player handles local input
+                for(GameObject* obj: gameObjects){
+                    if(IInteractable* interactable = dynamic_cast<IInteractable*>(obj)){
+                        if(event.key.keysym.sym == interactable->getInteractKey()){
+                            // Check if the interactable is also collidable
+                            ICollidable* interactableCollider = dynamic_cast<ICollidable*>(interactable);
+                            ICollidable* playerCollider = dynamic_cast<ICollidable*>(player);
+                            
+                            if(interactableCollider && playerCollider){
+                                auto shapeA = interactableCollider->getCollisionBox();
+                                auto shapeB = playerCollider->getCollisionBox();
+                                
+                                if (hitBoxDistance(shapeA, shapeB) < 10.0f) { // Simple distance check for proximity
+                                    interactable->onInteract();
+                                }
+                            }
+                        }
+                    }
+                }
                 player->onKeyDown(event.key.keysym.sym);
                 
             }
@@ -491,36 +540,55 @@ int main(int argc, char* argv[]) {
         // Ensure environment chunks exist around current player location
         ensureChunksAround(renderer, *player->getPosition(), 1);
 
+        // Update all objects first
         for(GameObject* obj: gameObjects){
             obj->update(static_cast<float>(dt));
+        }
+
+        // Then handle collisions - process each unique pair only once
+        std::vector<ICollidable*> colliders;
+        for(GameObject* obj: gameObjects){
             if(ICollidable* collider = dynamic_cast<ICollidable*>(obj)){
-                for(GameObject* otherObj: gameObjects){
-                    if(otherObj == obj) continue;
-                    if(ICollidable* otherCollider = dynamic_cast<ICollidable*>(otherObj)){
-                        auto shapeA = collider->getCollisionBox();
-                        auto shapeB = otherCollider->getCollisionBox();
-                        
-                        bool isColliding = checkCollision(shapeA, shapeB);
-                        
-                        if(collisionPairs.find({collider, otherCollider}) != collisionPairs.end() || collisionPairs.find({otherCollider, collider}) != collisionPairs.end()){
-                            if(!isColliding){
-                                collider->onCollisionLeave(otherCollider);
-                                otherCollider->onCollisionLeave(collider);
-                                collisionPairs.erase({collider, otherCollider});
-                                collisionPairs.erase({otherCollider, collider});
-                            } else {
-                                collider->onCollisionStay(otherCollider);
-                                otherCollider->onCollisionStay(collider);
-                            }
-                            continue;
-                        }
-                        if(isColliding){
-                            SDL_Log("Checking collision between objects");
-                            collider->onCollisionEnter(otherCollider);
-                            otherCollider->onCollisionEnter(collider);
-                            collisionPairs.insert({collider, otherCollider});
-                        }
+                colliders.push_back(collider);
+            }
+        }
+
+
+        for(size_t i = 0; i < colliders.size(); ++i){
+            for(size_t j = i + 1; j < colliders.size(); ++j){
+                ICollidable* collider = colliders[i];
+                ICollidable* otherCollider = colliders[j];
+                
+                auto shapeA = collider->getCollisionBox();
+                auto shapeB = otherCollider->getCollisionBox();
+                
+                bool isColliding = checkCollision(shapeA, shapeB);
+                
+                
+                
+                // Use consistent pair ordering (smaller pointer first)
+                auto pair = (collider < otherCollider) ? 
+                    std::make_pair(collider, otherCollider) : 
+                    std::make_pair(otherCollider, collider);
+                
+                bool wasColliding = collisionPairs.find(pair) != collisionPairs.end();
+                
+                if(wasColliding){
+                    if(!isColliding){
+                        // Collision ended
+                        collider->onCollisionLeave(otherCollider);
+                        otherCollider->onCollisionLeave(collider);
+                        collisionPairs.erase(pair);
+                    } else {
+                        // Collision continuing
+                        collider->onCollisionStay(otherCollider);
+                        otherCollider->onCollisionStay(collider);
                     }
+                } else if(isColliding){
+                    // New collision
+                    collider->onCollisionEnter(otherCollider);
+                    otherCollider->onCollisionEnter(collider);
+                    collisionPairs.insert(pair);
                 }
             }
         }
