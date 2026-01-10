@@ -33,12 +33,12 @@ class Camera{
     void render(SDL_Renderer* renderer,std::vector<GameObject*> gameObjects){
         // Example rendering logic for the camera
         if(toFollow){
-            Vector2* followPos = toFollow->getPosition();
+            Vector2 followWorldPos = toFollow->getWorldPosition();
             // Adjust display size by zoom level to center correctly
             float effectiveDisplayWidth = displaySize.x / zoomLevel;
             float effectiveDisplayHeight = displaySize.y / zoomLevel;
-            position.x = followPos->x + toFollow->getSize()->x / 2 - effectiveDisplayWidth / 2;
-            position.y = followPos->y + toFollow->getSize()->y / 2 - effectiveDisplayHeight / 2;
+            position.x = followWorldPos.x + toFollow->getSize()->x / 2 - effectiveDisplayWidth / 2;
+            position.y = followWorldPos.y + toFollow->getSize()->y / 2 - effectiveDisplayHeight / 2;
         }
         
         SDL_SetRenderDrawColor(renderer, 0, 0, 255, 255); // Blue background
@@ -47,19 +47,26 @@ class Camera{
         gameObjects = sortByZIndex(gameObjects);
 
         for(GameObject* obj: gameObjects){
-            Vector2* objPos = obj->getPosition();
+            Vector2 worldPos = obj->getWorldPosition();
             Vector2* objSize = obj->getSize();
             
             // Apply zoom to position and size
             SDL_Rect destRect = {
-                static_cast<int>((objPos->x - position.x) * zoomLevel),
-                static_cast<int>((objPos->y - position.y) * zoomLevel),
+                static_cast<int>((worldPos.x - position.x) * zoomLevel),
+                static_cast<int>((worldPos.y - position.y) * zoomLevel),
                 static_cast<int>(objSize->x * zoomLevel),
                 static_cast<int>(objSize->y * zoomLevel)
             };
-            // Render the object's sprite
-            // Assuming GameObject has a method getSprite() that returns SDL_Texture*
-            SDL_RenderCopy(renderer, obj->getSprite(), nullptr, &destRect);
+            
+            // Calculate rotation center (center of the object)
+            SDL_Point center = {
+                static_cast<int>(objSize->x * zoomLevel / 2),
+                static_cast<int>(objSize->y * zoomLevel / 2)
+            };
+            
+            // Render the object's sprite with rotation
+            SDL_RenderCopyEx(renderer, obj->getSprite(), nullptr, &destRect, 
+                            obj->getRotation(), &center, SDL_FLIP_NONE);
         }
 
         // Additional rendering logic can be added here

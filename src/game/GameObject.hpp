@@ -11,12 +11,14 @@ using json = nlohmann::json;
 
 class GameObject{
     private:
-    Vector2 position;
+    Vector2 position; // Local position relative to parent
     Vector2 sizeMultiplier;
     Vector2 size;
     float rotation;
     SDL_Texture* sprite;
     int zIndex;
+    GameObject* parent;
+    std::vector<GameObject*> children;
     
     inline static bool envCacheInit = false;
     inline static int envTileW = 0;
@@ -97,6 +99,7 @@ class GameObject{
         this->rotation = 0.0f;
         this->sprite = texture;
         this->zIndex = zIndex;
+        this->parent = nullptr;
         
         // Query texture size
         if (texture) {
@@ -113,6 +116,7 @@ class GameObject{
         this->position = pos;
         this->sizeMultiplier = sizeMultiplier;
         this->rotation = 0.0f;
+        this->parent = nullptr;
         // Load sprite texture from file
         SDL_Surface* surface = SDL_LoadBMP(spritePath);
         if (!surface) {
@@ -145,6 +149,7 @@ class GameObject{
         this->position = pos;
         this->sizeMultiplier = sizeMultiplier;
         this->rotation = 0.0f;
+        this->parent = nullptr;
         // Load sprite texture from file
         SDL_Surface* surface = SDL_LoadBMP(spritePath);
         if (surface) {
@@ -300,21 +305,73 @@ class GameObject{
         return &position;
     }
 
+    Vector2 getWorldPosition() const {
+        if (parent) {
+            Vector2 parentWorld = parent->getWorldPosition();
+            return {parentWorld.x + position.x, parentWorld.y + position.y};
+        }
+        return position;
+    }
+
     void changePosition(float dx, float dy) {
         position.x += dx;
         position.y += dy;
     }
 
     Vector2 getCenteredPosition() {
-        return {position.x + size.x / 2.0f, position.y + size.y / 2.0f};
+        Vector2 worldPos = getWorldPosition();
+        return {worldPos.x + size.x / 2.0f, worldPos.y + size.y / 2.0f};
     }
 
     Vector2* getSize() {
         return &size;
     }
 
+    void rotate(float angle) {
+        rotation += angle;
+    }
 
+    float getRotation() const {
+        return rotation;
+    }
 
+    void setRotation(float angle) {
+        rotation = angle;
+    }
 
+    void addChild(GameObject* child) {
+        if (child && child->parent != this) {
+            // Remove from previous parent if any
+            if (child->parent) {
+                child->parent->removeChild(child);
+            }
+            children.push_back(child);
+            child->parent = this;
+        }
+    }
+
+    void removeChild(GameObject* child) {
+        auto it = std::find(children.begin(), children.end(), child);
+        if (it != children.end()) {
+            children.erase(it);
+            child->parent = nullptr;
+        }
+    }
+
+    GameObject* getParent() const {
+        return parent;
+    }
+
+    const std::vector<GameObject*>& getChildren() const {
+        return children;
+    }
+
+    void setParent(GameObject* newParent) {
+        if (newParent) {
+            newParent->addChild(this);
+        } else if (parent) {
+            parent->removeChild(this);
+        }
+    }
 
 };

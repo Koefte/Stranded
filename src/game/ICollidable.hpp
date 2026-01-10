@@ -185,11 +185,11 @@ class ICollidable : virtual public GameObject {
 
     
     std::vector<Rectangle> getCollisionBox(){
-        Vector2* pos = this->getPosition();
+        Vector2 worldPos = this->getWorldPosition();
         Vector2* size = this->getSize();
         
         if(!isComplex){
-            return {Rectangle{*pos, {pos->x + size->x, pos->y + size->y}}};
+            return {Rectangle{worldPos, {worldPos.x + size->x, worldPos.y + size->y}}};
         }
         
         // Transform collision rectangles to world coordinates
@@ -202,12 +202,12 @@ class ICollidable : virtual public GameObject {
         for (const auto& rect : collisionRectangles) {
             Rectangle worldRect;
             worldRect.begin = {
-                pos->x + rect.begin.x * scale.x,
-                pos->y + rect.begin.y * scale.y
+                worldPos.x + rect.begin.x * scale.x,
+                worldPos.y + rect.begin.y * scale.y
             };
             worldRect.end = {
-                pos->x + rect.end.x * scale.x,
-                pos->y + rect.end.y * scale.y
+                worldPos.x + rect.end.x * scale.x,
+                worldPos.y + rect.end.y * scale.y
             };
             transformed.push_back(worldRect);
         }

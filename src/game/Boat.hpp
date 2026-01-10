@@ -21,7 +21,7 @@ class Boat : public IAnimatable,public IInteractable {
           ICollidable(pos,sizeMultiplier,spritePath[0],renderer,true,zIndex),
           IInteractable(pos,sizeMultiplier,spritePath[0],renderer,true,zIndex,interactKeys),
           navigationUIActive(navUIPtr),
-          navigationDirection({0.0f, 0.0f}),
+          navigationDirection({1.0f, 0.0f}),  // Default direction: east
           boatSpeed(50.0f),
           isMoving(false),
           lastDeltaTime(0.0f)
@@ -42,23 +42,71 @@ class Boat : public IAnimatable,public IInteractable {
         }
     }
     
-    void onCollisionStay(ICollidable* other) override {
-        // If boat is moving and colliding with player, move the player too
-        if(isMoving){
-            Player* playerObj = dynamic_cast<Player*>(other);
-            if(playerObj){
-                float dx = navigationDirection.x * boatSpeed * lastDeltaTime;
-                float dy = navigationDirection.y * boatSpeed * lastDeltaTime;
-                playerObj->changePosition(dx, dy);
-                // Update player's prevPosition so their collision response doesn't revert this
-                playerObj->updatePrevPosition();
-            }
+    void boardBoat(Player* player) {
+        if (player && player->getParent() != this) {
+            // Store player's current world position
+            Vector2 worldPos = player->getWorldPosition();
+            
+            // Store boat's world position before adding child
+            Vector2 boatWorld = getWorldPosition();
+            
+            // Add player as child
+            addChild(player);
+            
+            // Calculate local position (world position - boat's world position)
+            player->getPosition()->x = worldPos.x - boatWorld.x;
+            player->getPosition()->y = worldPos.y - boatWorld.y;
+            
+            SDL_Log("Player boarded the boat");
+        }
+    }
+    
+    void leaveBoat(Player* player) {
+        if (player && player->getParent() == this) {
+            // Store player's current world position
+            Vector2 worldPos = player->getWorldPosition();
+            
+            // Remove player as child
+            removeChild(player);
+            
+            // Set to absolute world position
+            player->getPosition()->x = worldPos.x;
+            player->getPosition()->y = worldPos.y;
+            
+            SDL_Log("Player left the boat");
+        }
+    }
+    
+    bool isPlayerOnBoard(Player* player) const {
+        return player && player->getParent() == this;
+    }
+    
+    Vector2 getNavigationDirection() const {
+        return navigationDirection;
+    }
+    
+    bool getIsMoving() const {
+        return isMoving;
+    }
+    
+    void setBoatState(float x, float y, float rot, float navDirX, float navDirY, bool moving) {
+        getPosition()->x = x;
+        getPosition()->y = y;
+        setRotation(rot);
+        navigationDirection.x = navDirX;
+        navigationDirection.y = navDirY;
+        if (moving && !isMoving) {
+            isMoving = true;
+            startAnimation();
+        } else if (!moving && isMoving) {
+            isMoving = false;
+            stopAnimation();
         }
     }
     
     void onInteract(SDL_Keycode key) override {
-        // Only respond to F and E keys
-        if(key != SDLK_f && key != SDLK_e){
+        // Only respond to F, E, and B keys
+        if(key != SDLK_f && key != SDLK_e && key != SDLK_b){
             return;
         }
         
@@ -67,7 +115,7 @@ class Boat : public IAnimatable,public IInteractable {
             *navigationUIActive = !(*navigationUIActive);
             SDL_Log("Navigation UI %s", *navigationUIActive ? "opened" : "closed");
         }
-        if(key == SDLK_e){
+        else if(key == SDLK_e){
           if(isMoving){
               SDL_Log("Boat stopping");
               isMoving = false;
@@ -77,6 +125,10 @@ class Boat : public IAnimatable,public IInteractable {
               isMoving = true;
               startAnimation();
           }
+        }
+        else if(key == SDLK_b){
+            // Board/leave is handled externally in main.cpp
+            // This is just for key recognition
         }
     }
 };
