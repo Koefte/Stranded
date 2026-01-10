@@ -300,6 +300,11 @@ class GameObject{
         return &position;
     }
 
+    void changePosition(float dx, float dy) {
+        position.x += dx;
+        position.y += dy;
+    }
+
     Vector2 getCenteredPosition() {
         return {position.x + size.x / 2.0f, position.y + size.y / 2.0f};
     }

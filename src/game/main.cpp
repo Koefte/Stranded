@@ -27,6 +27,9 @@ static Boat* boat;
 static SDL_Renderer* g_renderer = nullptr;
 static std::set<std::pair<int,int>> generatedChunks;
 static const int CHUNK_SIZE_PX = 512; // world-space pixels per chunk
+static bool navigationUIActive = false;
+static SDL_Texture* navigationClockTexture = nullptr;
+static SDL_Texture* navigationIndicatorTexture = nullptr;
 
 
 // Networking
@@ -72,6 +75,14 @@ struct SnapshotHeader {
 
 constexpr int WIN_WIDTH = 800;
 constexpr int WIN_HEIGHT = 600;
+
+enum RENDER_LAYERS {
+    LAYER_ENVIRONMENT = 0,
+    LAYER_BOAT = 1,
+    LAYER_LIGHTHOUSE = 2,
+    LAYER_PLAYER = 3,
+    LAYER_DEBUG = 4
+};
 
 Player* getOrCreateRemotePlayer(uint32_t id) {
     if (remotePlayers.find(id) != remotePlayers.end()) {
@@ -320,6 +331,34 @@ int main(int argc, char* argv[]) {
     }
     g_renderer = renderer;
 
+    // Load navigation clock texture
+    SDL_Surface* navClockSurface = SDL_LoadBMP("./sprites/navigation_clock.bmp");
+    if(navClockSurface){
+        navigationClockTexture = SDL_CreateTextureFromSurface(renderer, navClockSurface);
+        SDL_FreeSurface(navClockSurface);
+        if(navigationClockTexture){
+            SDL_Log("Navigation clock texture loaded successfully");
+        } else {
+            std::cerr << "Failed to create texture from navigation_clock.bmp: " << SDL_GetError() << "\n";
+        }
+    } else {
+        std::cerr << "Failed to load navigation_clock.bmp: " << SDL_GetError() << "\n";
+    }
+
+    // Load navigation indicator texture
+    SDL_Surface* navIndicatorSurface = SDL_LoadBMP("./sprites/navigation_indicator.bmp");
+    if(navIndicatorSurface){
+        navigationIndicatorTexture = SDL_CreateTextureFromSurface(renderer, navIndicatorSurface);
+        SDL_FreeSurface(navIndicatorSurface);
+        if(navigationIndicatorTexture){
+            SDL_Log("Navigation indicator texture loaded successfully");
+        } else {
+            std::cerr << "Failed to create texture from navigation_indicator.bmp: " << SDL_GetError() << "\n";
+        }
+    } else {
+        std::cerr << "Failed to load navigation_indicator.bmp: " << SDL_GetError() << "\n";
+    }
+
     // Seed randomness for environment variation
     srand(static_cast<unsigned>(SDL_GetTicks()));
 
@@ -333,7 +372,7 @@ int main(int argc, char* argv[]) {
         "./sprites/Boy_Walk4.bmp"
     };
 
-    player = new Player({0.0f, 0.0f},{2.0f,2.0f}, playerSpritePaths,4, renderer,0.1f,2);
+    player = new Player({0.0f, 0.0f},{2.0f,2.0f}, playerSpritePaths,4, renderer,0.1f,LAYER_PLAYER);
 
     const char* boatSpritePaths[] = {
         "./sprites/Boat1.bmp",
@@ -342,7 +381,7 @@ int main(int argc, char* argv[]) {
         "./sprites/Boat4.bmp"
     };
 
-    boat = new Boat({100.0f, 100.0f}, {3.0f, 3.0f}, boatSpritePaths, 4, renderer, 0.2f, 2,SDLK_f);
+    boat = new Boat({430.0f, 280.0f}, {3.0f, 3.0f}, boatSpritePaths, 4, renderer, 0.2f, LAYER_BOAT, std::set<SDL_Keycode>{SDLK_f,SDLK_e}, &navigationUIActive);
    
 
     camera = new Camera({0.0f, 0.0f}, {WIN_WIDTH, WIN_HEIGHT},2.0f);
@@ -410,7 +449,7 @@ int main(int argc, char* argv[]) {
         "./sprites/lighthouse_tower.bmp",
         renderer,
         true,
-        1,
+        LAYER_LIGHTHOUSE,
         10  // Smaller minClusterSize for more detailed hitboxes
     );
 
@@ -451,7 +490,7 @@ int main(int argc, char* argv[]) {
                 // Only local player handles local input
                 for(GameObject* obj: gameObjects){
                     if(IInteractable* interactable = dynamic_cast<IInteractable*>(obj)){
-                        if(event.key.keysym.sym == interactable->getInteractKey()){
+                        if(interactable->getInteractKeys().find(event.key.keysym.sym) != interactable->getInteractKeys().end()){
                             // Check if the interactable is also collidable
                             ICollidable* interactableCollider = dynamic_cast<ICollidable*>(interactable);
                             ICollidable* playerCollider = dynamic_cast<ICollidable*>(player);
@@ -461,17 +500,24 @@ int main(int argc, char* argv[]) {
                                 auto shapeB = playerCollider->getCollisionBox();
                                 
                                 if (hitBoxDistance(shapeA, shapeB) < 10.0f) { // Simple distance check for proximity
-                                    interactable->onInteract();
+                                    interactable->onInteract(event.key.keysym.sym);
                                 }
                             }
                         }
                     }
                 }
-                player->onKeyDown(event.key.keysym.sym);
+                
+                // Only pass key to player if navigation UI is not active
+                if(!navigationUIActive){
+                    player->onKeyDown(event.key.keysym.sym);
+                }
                 
             }
             else if(event.type == SDL_KEYUP){
-                player->onKeyUp(event.key.keysym.sym);
+                // Only pass key to player if navigation UI is not active
+                if(!navigationUIActive){
+                    player->onKeyUp(event.key.keysym.sym);
+                }
             }
         }
         
@@ -540,72 +586,139 @@ int main(int argc, char* argv[]) {
         // Ensure environment chunks exist around current player location
         ensureChunksAround(renderer, *player->getPosition(), 1);
 
-        // Update all objects first
-        for(GameObject* obj: gameObjects){
-            obj->update(static_cast<float>(dt));
-        }
-
-        // Then handle collisions - process each unique pair only once
-        std::vector<ICollidable*> colliders;
-        for(GameObject* obj: gameObjects){
-            if(ICollidable* collider = dynamic_cast<ICollidable*>(obj)){
-                colliders.push_back(collider);
+        // Skip game updates when navigation UI is active
+        if(!navigationUIActive){
+            // Update all objects first
+            for(GameObject* obj: gameObjects){
+                obj->update(static_cast<float>(dt));
             }
-        }
 
-
-        for(size_t i = 0; i < colliders.size(); ++i){
-            for(size_t j = i + 1; j < colliders.size(); ++j){
-                ICollidable* collider = colliders[i];
-                ICollidable* otherCollider = colliders[j];
-                
-                auto shapeA = collider->getCollisionBox();
-                auto shapeB = otherCollider->getCollisionBox();
-                
-                bool isColliding = checkCollision(shapeA, shapeB);
-                
-                
-                
-                // Use consistent pair ordering (smaller pointer first)
-                auto pair = (collider < otherCollider) ? 
-                    std::make_pair(collider, otherCollider) : 
-                    std::make_pair(otherCollider, collider);
-                
-                bool wasColliding = collisionPairs.find(pair) != collisionPairs.end();
-                
-                if(wasColliding){
-                    if(!isColliding){
-                        // Collision ended
-                        collider->onCollisionLeave(otherCollider);
-                        otherCollider->onCollisionLeave(collider);
-                        collisionPairs.erase(pair);
-                    } else {
-                        // Collision continuing
-                        collider->onCollisionStay(otherCollider);
-                        otherCollider->onCollisionStay(collider);
-                    }
-                } else if(isColliding){
-                    // New collision
-                    collider->onCollisionEnter(otherCollider);
-                    otherCollider->onCollisionEnter(collider);
-                    collisionPairs.insert(pair);
+            // Then handle collisions - process each unique pair only once
+            std::vector<ICollidable*> colliders;
+            for(GameObject* obj: gameObjects){
+                if(ICollidable* collider = dynamic_cast<ICollidable*>(obj)){
+                    colliders.push_back(collider);
                 }
             }
-        }
-        
-        // Host broadcasts snapshot
-        if (isHost && udpSocket) {
-            broadcastSnapshot();
+
+
+            for(size_t i = 0; i < colliders.size(); ++i){
+                for(size_t j = i + 1; j < colliders.size(); ++j){
+                    ICollidable* collider = colliders[i];
+                    ICollidable* otherCollider = colliders[j];
+                    
+                    auto shapeA = collider->getCollisionBox();
+                    auto shapeB = otherCollider->getCollisionBox();
+                    
+                    bool isColliding = checkCollision(shapeA, shapeB);
+                    
+                    
+                    
+                    // Use consistent pair ordering (smaller pointer first)
+                    auto pair = (collider < otherCollider) ? 
+                        std::make_pair(collider, otherCollider) : 
+                        std::make_pair(otherCollider, collider);
+                    
+                    bool wasColliding = collisionPairs.find(pair) != collisionPairs.end();
+                    
+                    if(wasColliding){
+                        if(!isColliding){
+                            // Collision ended
+                            collider->onCollisionLeave(otherCollider);
+                            otherCollider->onCollisionLeave(collider);
+                            collisionPairs.erase(pair);
+                        } else {
+                            // Collision continuing
+                            collider->onCollisionStay(otherCollider);
+                            otherCollider->onCollisionStay(collider);
+                        }
+                    } else if(isColliding){
+                        // New collision
+                        collider->onCollisionEnter(otherCollider);
+                        otherCollider->onCollisionEnter(collider);
+                        collisionPairs.insert(pair);
+                    }
+                }
+            }
+            
+            // Host broadcasts snapshot
+            if (isHost && udpSocket) {
+                broadcastSnapshot();
+            }
         }
         
         camera->render(renderer,gameObjects);
 
-        
+        // Render navigation UI overlay if active
+        if(navigationUIActive){
+            // Darken the entire screen
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 180); // Semi-transparent black
+            SDL_Rect screenRect = {0, 0, WIN_WIDTH, WIN_HEIGHT};
+            SDL_RenderFillRect(renderer, &screenRect);
+            
+            // Draw navigation clock sprite in center of screen
+            if(navigationClockTexture){
+                int texW, texH;
+                SDL_QueryTexture(navigationClockTexture, nullptr, nullptr, &texW, &texH);
+                int centerX = WIN_WIDTH / 2;
+                int centerY = WIN_HEIGHT / 2;
+                SDL_Rect dstRect = {
+                    centerX - texW / 2,
+                    centerY - texH / 2,
+                    texW,
+                    texH
+                };
+                SDL_RenderCopy(renderer, navigationClockTexture, nullptr, &dstRect);
+                
+                // Draw navigation indicator based on mouse position
+                if(navigationIndicatorTexture){
+                    int mouseX, mouseY;
+                    SDL_GetMouseState(&mouseX, &mouseY);
+                    
+                    // Calculate angle from center to mouse
+                    float dx = static_cast<float>(mouseX - centerX);
+                    float dy = static_cast<float>(mouseY - centerY);
+                    float angle = atan2(dy, dx);
+                    
+                    // Update boat's navigation direction
+                    boat->setNavigationDirection(angle);
+                    
+                    // Assume clock radius is approximately half the texture width
+                    int clockRadius = texW / 2 - 10; // Slightly inside the edge
+                    
+                    // Calculate indicator position on the clock circle
+                    int indicatorX = centerX + static_cast<int>(clockRadius * cos(angle));
+                    int indicatorY = centerY + static_cast<int>(clockRadius * sin(angle));
+                    
+                    // Draw the indicator sprite
+                    int indW, indH;
+                    SDL_QueryTexture(navigationIndicatorTexture, nullptr, nullptr, &indW, &indH);
+                    SDL_Rect indicatorRect = {
+                        indicatorX - indW / 2,
+                        indicatorY - indH / 2,
+                        indW,
+                        indH
+                    };
+                    SDL_RenderCopy(renderer, navigationIndicatorTexture, nullptr, &indicatorRect);
+                }
+            }
+        }
+
+        // Present the final frame once
+        SDL_RenderPresent(renderer);
     }
 
     if (udpSocket) {
         SDLNet_UDP_Close(udpSocket);
         SDLNet_Quit();
+    }
+    
+    if(navigationClockTexture){
+        SDL_DestroyTexture(navigationClockTexture);
+    }
+    if(navigationIndicatorTexture){
+        SDL_DestroyTexture(navigationIndicatorTexture);
     }
     
     SDL_DestroyRenderer(renderer);

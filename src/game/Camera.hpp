@@ -63,7 +63,7 @@ class Camera{
         }
 
         // Additional rendering logic can be added here
-        SDL_RenderPresent(renderer);
+        // Note: SDL_RenderPresent is called at the end of the main game loop
     }
 
     void follow(GameObject* obj){

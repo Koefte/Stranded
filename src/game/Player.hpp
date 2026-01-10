@@ -6,6 +6,7 @@
 #include "GameObject.hpp"
 #include "IAnimatable.hpp"
 #include "ICollidable.hpp"
+#include "IInteractable.hpp"
 
 class Player : public IAnimatable, public ICollidable {
 private:
@@ -93,6 +94,19 @@ public:
         Vector2* pos = getPosition();
         pos->x += velocity.x * dt;
         pos->y += velocity.y * dt;
+    }
+
+    // Method to move player externally (e.g., by boat)
+    void moveExternally(float dx, float dy) {
+        changePosition(dx, dy);
+        // Update prevPosition so collision response doesn't revert this movement
+        Vector2* pos = getPosition();
+        prevPosition = *pos;
+    }
+
+    void updatePrevPosition() {
+        Vector2* pos = getPosition();
+        prevPosition = *pos;
     }
 
     void onCollisionEnter(ICollidable* other) override {

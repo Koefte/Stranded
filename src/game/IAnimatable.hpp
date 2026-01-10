@@ -34,13 +34,21 @@ class IAnimatable : virtual public GameObject{
         this->setSprite(animationFrames[0]);
     }
 
+    void toggleAnimation(){
+        if(isAnimating){
+            stopAnimation();
+        } else {
+            startAnimation();
+        }
+    }
+
     void startAnimation(){
         isAnimating = true;
     }
 
 
     void update(float dt) override {
-        if (animationFrames.empty()) return;
+        if (animationFrames.empty() || !isAnimating) return;
 
         elapsed += dt;
         while (elapsed >= animationStep) {
