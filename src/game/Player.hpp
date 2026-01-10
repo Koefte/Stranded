@@ -8,6 +8,7 @@
 #include "ICollidable.hpp"
 #include "IInteractable.hpp"
 #include "Hook.hpp"
+#include "FishingHook.hpp"
 
 class Player : public IAnimatable, public ICollidable {
 private:
@@ -17,6 +18,7 @@ private:
     bool moveUp = false, moveDown = false, moveLeft = false, moveRight = false;
     SDL_Renderer* renderer;
     Hook* hook = nullptr;
+    FishingHook* fishingHook = nullptr;
 
 public:
    
@@ -39,12 +41,18 @@ public:
         hook = new Hook({-7.0f, 12.0f}, {2.0f, 2.0f}, "./sprites/hook.bmp", renderer, zIndex + 1);
         addChild(hook);
         hook->hide();
+        
+        // Create fishing hook projectile (not a child, moves independently)
+        fishingHook = new FishingHook({0.0f, 0.0f}, {1.0f, 1.0f}, "./sprites/hook.bmp", renderer, zIndex + 2);
     }
 
     ~Player() {
         if (hook) {
             removeChild(hook);
             delete hook;
+        }
+        if (fishingHook) {
+            delete fishingHook;
         }
     }
 
@@ -92,8 +100,59 @@ public:
         }
     }
 
+    void onMouseDown(int button, int mouseX, int mouseY, const Vector2& cameraOffset, float cameraZoom) {
+        if (button == SDL_BUTTON_LEFT && isHooking() && fishingHook && hook) {
+            // Always retract before casting to allow recasting
+            fishingHook->retract();
+            // Calculate world position from screen position
+            Vector2 worldMousePos = {
+                (mouseX / cameraZoom) + cameraOffset.x,
+                (mouseY / cameraZoom) + cameraOffset.y
+            };
+            // Get hook's world position (where the rod is)
+            Vector2 hookWorld = hook->getWorldPosition();
+            Vector2* hookSize = hook->getSize();
+            Vector2 hookTip = {
+                hookWorld.x + hookSize->x / 2.0f,
+                hookWorld.y + hookSize->y
+            };
+            // Calculate direction from hook tip to mouse
+            Vector2 direction = {
+                worldMousePos.x - hookTip.x,
+                worldMousePos.y - hookTip.y
+            };
+            // Cast the fishing hook from the hook tip position, and stop at mouse
+            fishingHook->cast(hookTip, direction, worldMousePos);
+        }
+    }
+
+    FishingHook* getFishingHook() const {
+        return fishingHook;
+    }
+
     void update(float dt) override {
         IAnimatable::update(dt);  // Always update animation
+        
+        // Update fishing hook and its line origin
+        if (fishingHook && fishingHook->getIsActive() && hook) {
+            // Update the line origin to follow the hook position
+            Vector2 hookWorld = hook->getWorldPosition();
+            Vector2* hookSize = hook->getSize();
+            Vector2 hookTip = {
+                hookWorld.x + hookSize->x / 2.0f,
+                hookWorld.y + hookSize->y
+            };
+            fishingHook->updateLineOrigin(hookTip);
+            fishingHook->update(dt);
+        } else if (fishingHook) {
+            fishingHook->update(dt);
+        }
+
+        // Despawn fishing hook if rod is disabled (not hooking)
+        if (fishingHook && fishingHook->getIsActive() && !isHooking()) {
+            fishingHook->retract();
+        }
+        
         Vector2* pos = getPosition();
         prevPosition = *pos;  // Save before movement
 

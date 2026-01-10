@@ -514,6 +514,16 @@ int main(int argc, char* argv[]) {
     gameObjects.push_back(lighthouse);
     gameObjects.push_back(lighthouseGround);
     
+    // Add fishing hooks to game objects
+    if (player->getFishingHook()) {
+        gameObjects.push_back(player->getFishingHook());
+    }
+    for (auto& [id, remote] : remotePlayers) {
+        if (remote->getFishingHook()) {
+            gameObjects.push_back(remote->getFishingHook());
+        }
+    }
+    
 
     Uint64 prev = SDL_GetPerformanceCounter();
     double freq = static_cast<double>(SDL_GetPerformanceFrequency());
@@ -529,6 +539,13 @@ int main(int argc, char* argv[]) {
                 running = false;
             } else if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE) {
                 running = false;
+            }
+            else if (event.type == SDL_MOUSEBUTTONDOWN) {
+                // Handle mouse click for fishing hook casting
+                if (!navigationUIActive) {
+                    player->onMouseDown(event.button.button, event.button.x, event.button.y, 
+                                       camera->getPosition(), camera->getZoom());
+                }
             }
             else if(event.type == SDL_KEYDOWN){
                 
@@ -808,6 +825,16 @@ int main(int argc, char* argv[]) {
         }
         
         camera->render(renderer,gameObjects);
+
+        // Render fishing lines after game objects but before UI
+        if (player->getFishingHook()) {
+            player->getFishingHook()->renderLine(renderer, camera->getPosition(), camera->getZoom());
+        }
+        for (auto& [id, remote] : remotePlayers) {
+            if (remote->getFishingHook()) {
+                remote->getFishingHook()->renderLine(renderer, camera->getPosition(), camera->getZoom());
+            }
+        }
 
         // Render navigation UI overlay if active
         if(navigationUIActive){
