@@ -19,6 +19,7 @@ class GameObject{
     int zIndex;
     GameObject* parent;
     std::vector<GameObject*> children;
+    bool isVisible = true;
     
     inline static bool envCacheInit = false;
     inline static int envTileW = 0;
@@ -172,6 +173,41 @@ class GameObject{
 
     void setSprite(SDL_Texture* newSprite){
         this->sprite = newSprite;
+        // Update size based on the new texture
+        if (newSprite) {
+            int w, h;
+            SDL_QueryTexture(newSprite, nullptr, nullptr, &w, &h);
+            this->size = {static_cast<float>(w) * sizeMultiplier.x, static_cast<float>(h) * sizeMultiplier.y};
+        }
+    }
+
+    void show() {
+        isVisible = true;
+    }
+
+    void hide() {
+        isVisible = false;
+    }
+
+    bool getVisible() const {
+        return isVisible;
+    }
+
+    void setVisible(bool visible) {
+        isVisible = visible;
+    }
+
+    void setSprite(const char* spritePath, SDL_Renderer* renderer){
+        SDL_Surface* surface = SDL_LoadBMP(spritePath);
+        if (surface) {
+            // Store size before freeing surface
+            float w = static_cast<float>(surface->w);
+            float h = static_cast<float>(surface->h);
+            SDL_Texture* newTexture = SDL_CreateTextureFromSurface(renderer, surface);
+            SDL_FreeSurface(surface);
+            this->sprite = newTexture;
+            this->size = {w * sizeMultiplier.x, h * sizeMultiplier.y};
+        }
     }
 
     virtual void update(float dt){

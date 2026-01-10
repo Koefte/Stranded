@@ -43,6 +43,7 @@ static uint32_t inputSeq = 0;
 static std::unordered_map<uint32_t, Player*> remotePlayers;
 static bool clientBoardingRequest = false;
 static bool clientBoatMovementToggle = false;
+static bool clientHookToggle = false;
 
 #pragma pack(push, 1)
 struct ChunkPacket {
@@ -61,6 +62,7 @@ struct InputPacket {
     uint8_t boardBoat; // 0=no action, 1=toggle boarding
     uint8_t toggleBoatMovement; // 0=no action, 1=toggle start/stop
     uint8_t hasBoatControl; // 0=no, 1=has navigation direction update
+    uint8_t toggleHook; // 0=no action, 1=toggle hook
     float boatNavDirX;
     float boatNavDirY;
 };
@@ -78,6 +80,7 @@ struct PlayerState {
     float vx, vy;  // velocity
     uint8_t animFrame;
     uint8_t isOnBoat; // 0 = not on boat, 1 = on boat
+    uint8_t isHooking; // 0 = not hooking, 1 = hooking
 };
 
 struct SnapshotHeader {
@@ -115,7 +118,7 @@ Player* getOrCreateRemotePlayer(uint32_t id) {
         "./sprites/Boy_Walk3.bmp",
         "./sprites/Boy_Walk4.bmp"
     };
-    Player* remote = new Player({0.0f, 0.0f}, {2.0f, 2.0f}, remoteSprites, 4, g_renderer, 0.1f, 1);
+    Player* remote = new Player({0.0f, 0.0f}, {2.0f, 2.0f}, remoteSprites, 4, g_renderer, 0.1f, LAYER_PLAYER);
     remotePlayers[id] = remote;
     gameObjects.push_back(remote); // Immediately add to render list
     std::cout << "Created remote player with ID: " << id << "\n";
@@ -141,11 +144,14 @@ void sendInputPacket() {
     uint8_t toggleBoatMovement = clientBoatMovementToggle ? 1 : 0;
     clientBoatMovementToggle = false; // Reset after sending
     
+    uint8_t toggleHook = clientHookToggle ? 1 : 0;
+    clientHookToggle = false; // Reset after sending
+    
     // Send boat navigation direction if we have control
     uint8_t hasBoatControl = navigationUIActive ? 1 : 0;
     Vector2 navDir = boat->getNavigationDirection();
     
-    InputPacket pkt{clientId, inputSeq++, moveFlags, boardBoat, toggleBoatMovement, hasBoatControl, navDir.x, navDir.y};
+    InputPacket pkt{clientId, inputSeq++, moveFlags, boardBoat, toggleBoatMovement, hasBoatControl, toggleHook, navDir.x, navDir.y};
     UDPpacket* out = SDLNet_AllocPacket(sizeof(pkt));
     std::memcpy(out->data, &pkt, sizeof(pkt));
     out->len = sizeof(pkt);
@@ -213,6 +219,11 @@ void receiveInputs() {
                 if (pkt.toggleBoatMovement == 1) {
                     boat->onInteract(SDLK_e);
                 }
+                
+                // Handle hook toggle
+                if (pkt.toggleHook == 1) {
+                    remote->onKeyDown(SDLK_r);
+                }
             }
         }
     }
@@ -250,14 +261,16 @@ void broadcastSnapshot() {
     Vector2 pos = player->getWorldPosition();
     Vector2 vel = player->getVelocity();
     uint8_t onBoat = boat->isPlayerOnBoard(player) ? 1 : 0;
-    states.push_back({0, pos.x, pos.y, vel.x, vel.y, 0, onBoat});
+    uint8_t hooking = player->isHooking() ? 1 : 0;
+    states.push_back({0, pos.x, pos.y, vel.x, vel.y, 0, onBoat, hooking});
     
     // Add remote players
     for (auto& [id, p] : remotePlayers) {
         Vector2 rpos = p->getWorldPosition();
         Vector2 rvel = p->getVelocity();
         uint8_t rOnBoat = boat->isPlayerOnBoard(p) ? 1 : 0;
-        states.push_back({id, rpos.x, rpos.y, rvel.x, rvel.y, 0, rOnBoat});
+        uint8_t rHooking = p->isHooking() ? 1 : 0;
+        states.push_back({id, rpos.x, rpos.y, rvel.x, rvel.y, 0, rOnBoat, rHooking});
     }
     
     // Boat state
@@ -285,97 +298,6 @@ void broadcastSnapshot() {
         SDLNet_UDP_Send(udpSocket, -1, out);
     }
     SDLNet_FreePacket(out);
-}
-
-void receiveSnapshot(SDL_Renderer* renderer) {
-    if (!udpSocket || isHost) return;
-    
-    UDPpacket* in = SDLNet_AllocPacket(2048);
-    if (SDLNet_UDP_Recv(udpSocket, in)) {
-        if (in->len >= sizeof(SnapshotHeader)) {
-            SnapshotHeader header;
-            std::memcpy(&header, in->data, sizeof(header));
-            
-            size_t offset = sizeof(header);
-            
-            // Read boat state if present
-            if (header.hasBoat && in->len >= offset + sizeof(BoatState)) {
-                BoatState boatState;
-                std::memcpy(&boatState, in->data + offset, sizeof(boatState));
-                boat->setBoatState(boatState.x, boatState.y, boatState.rotation, 
-                                  boatState.navDirX, boatState.navDirY, boatState.isMoving != 0);
-                offset += sizeof(BoatState);
-            }
-            
-            size_t expected = offset + header.playerCount * sizeof(PlayerState);
-            if (in->len >= expected) {
-                PlayerState* states = reinterpret_cast<PlayerState*>(in->data + offset);
-                
-                for (uint32_t i = 0; i < header.playerCount; ++i) {
-                    if (states[i].id == clientId) {
-                        // Update local player from authoritative state
-                        Vector2* pos = player->getPosition();
-                        
-                        // Handle boarding state
-                        bool wasOnBoat = boat->isPlayerOnBoard(player);
-                        bool shouldBeOnBoat = states[i].isOnBoat != 0;
-                        
-                        if (shouldBeOnBoat && !wasOnBoat) {
-                            // Convert world position to local before boarding
-                            pos->x = states[i].x;
-                            pos->y = states[i].y;
-                            boat->boardBoat(player);
-                        } else if (!shouldBeOnBoat && wasOnBoat) {
-                            boat->leaveBoat(player);
-                            pos->x = states[i].x;
-                            pos->y = states[i].y;
-                        } else if (shouldBeOnBoat) {
-                            // Already on boat, update local position
-                            Vector2 boatWorld = boat->getWorldPosition();
-                            pos->x = states[i].x - boatWorld.x;
-                            pos->y = states[i].y - boatWorld.y;
-                        } else {
-                            // Not on boat, update world position
-                            pos->x = states[i].x;
-                            pos->y = states[i].y;
-                        }
-                        
-                        player->setVelocity({states[i].vx, states[i].vy});
-                    } else {
-                        // Update/create remote player
-                        Player* remote = getOrCreateRemotePlayer(states[i].id);
-                        if (!remote) continue;
-                        
-                        Vector2* rpos = remote->getPosition();
-                        
-                        // Handle remote player boarding state
-                        bool wasOnBoat = boat->isPlayerOnBoard(remote);
-                        bool shouldBeOnBoat = states[i].isOnBoat != 0;
-                        
-                        if (shouldBeOnBoat && !wasOnBoat) {
-                            rpos->x = states[i].x;
-                            rpos->y = states[i].y;
-                            boat->boardBoat(remote);
-                        } else if (!shouldBeOnBoat && wasOnBoat) {
-                            boat->leaveBoat(remote);
-                            rpos->x = states[i].x;
-                            rpos->y = states[i].y;
-                        } else if (shouldBeOnBoat) {
-                            Vector2 boatWorld = boat->getWorldPosition();
-                            rpos->x = states[i].x - boatWorld.x;
-                            rpos->y = states[i].y - boatWorld.y;
-                        } else {
-                            rpos->x = states[i].x;
-                            rpos->y = states[i].y;
-                        }
-                        
-                        remote->setVelocity({states[i].vx, states[i].vy});
-                    }
-                }
-            }
-        }
-    }
-    SDLNet_FreePacket(in);
 }
 
 float hitBoxDistance(std::vector<Rectangle> shapeA, std::vector<Rectangle> shapeB) {
@@ -593,7 +515,6 @@ int main(int argc, char* argv[]) {
     gameObjects.push_back(lighthouseGround);
     
 
-
     Uint64 prev = SDL_GetPerformanceCounter();
     double freq = static_cast<double>(SDL_GetPerformanceFrequency());
     std::set<std::pair<ICollidable*, ICollidable*>> collisionPairs; // TODO: Make this work
@@ -665,7 +586,20 @@ int main(int argc, char* argv[]) {
                 
                 // Only pass key to player if navigation UI is not active
                 if(!navigationUIActive){
-                    player->onKeyDown(event.key.keysym.sym);
+                    // Handle hook toggle separately for networking
+                    if (event.key.keysym.sym == SDLK_r) {
+                        if (isHost) {
+                            // Host handles it directly
+                            player->onKeyDown(event.key.keysym.sym);
+                        } else {
+                            // Client sends request to server
+                            clientHookToggle = true;
+                            // Also apply locally for immediate feedback
+                            player->onKeyDown(event.key.keysym.sym);
+                        }
+                    } else {
+                        player->onKeyDown(event.key.keysym.sym);
+                    }
                 }
                 
             }
@@ -764,6 +698,7 @@ int main(int argc, char* argv[]) {
                                 }
                                 
                                 player->setVelocity({states[i].vx, states[i].vy});
+                                player->setHooking(states[i].isHooking != 0);
                             } else {
                                 Player* remote = getOrCreateRemotePlayer(states[i].id);
                                 if (!remote) continue;
@@ -795,6 +730,7 @@ int main(int argc, char* argv[]) {
                                 }
                                 
                                 remote->setVelocity({states[i].vx, states[i].vy});
+                                remote->setHooking(states[i].isHooking != 0);
                             }
                         }
                         continue;
@@ -885,13 +821,19 @@ int main(int argc, char* argv[]) {
             if(navigationClockTexture){
                 int texW, texH;
                 SDL_QueryTexture(navigationClockTexture, nullptr, nullptr, &texW, &texH);
+                
+                // Scale up the clock
+                float scale = 8.0f;
+                int scaledW = static_cast<int>(texW * scale);
+                int scaledH = static_cast<int>(texH * scale);
+                
                 int centerX = WIN_WIDTH / 2;
                 int centerY = WIN_HEIGHT / 2;
                 SDL_Rect dstRect = {
-                    centerX - texW / 2,
-                    centerY - texH / 2,
-                    texW,
-                    texH
+                    centerX - scaledW / 2,
+                    centerY - scaledH / 2,
+                    scaledW,
+                    scaledH
                 };
                 SDL_RenderCopy(renderer, navigationClockTexture, nullptr, &dstRect);
                 
@@ -908,8 +850,8 @@ int main(int argc, char* argv[]) {
                     // Update boat's navigation direction
                     boat->setNavigationDirection(angle);
                     
-                    // Assume clock radius is approximately half the texture width
-                    int clockRadius = texW / 2 - 10; // Slightly inside the edge
+                    // Assume clock radius is approximately half the scaled texture width
+                    int clockRadius = scaledW / 2 - 10; // Slightly inside the edge
                     
                     // Calculate indicator position on the clock circle
                     int indicatorX = centerX + static_cast<int>(clockRadius * cos(angle));

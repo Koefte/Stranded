@@ -7,6 +7,7 @@
 #include "IAnimatable.hpp"
 #include "ICollidable.hpp"
 #include "IInteractable.hpp"
+#include "Hook.hpp"
 
 class Player : public IAnimatable, public ICollidable {
 private:
@@ -14,6 +15,8 @@ private:
     Vector2 prevPosition;  // Track previous frame position
     Vector2 velocity = {0.0f, 0.0f};  // Current velocity
     bool moveUp = false, moveDown = false, moveLeft = false, moveRight = false;
+    SDL_Renderer* renderer;
+    Hook* hook = nullptr;
 
 public:
    
@@ -29,8 +32,35 @@ public:
         int zIndex = 0)
         : GameObject(pos, sizeMultiplier, spritePaths[0], renderer, zIndex),
           IAnimatable(pos, sizeMultiplier, spritePaths, frameCount, renderer, animationStep, zIndex),
-          ICollidable(pos, sizeMultiplier, spritePaths[0], renderer, false, zIndex)
-    {}
+          ICollidable(pos, sizeMultiplier, spritePaths[0], renderer, false, zIndex),
+          renderer(renderer)
+    {
+        // Create hook as a child object with local position offset
+        hook = new Hook({-7.0f, 12.0f}, {2.0f, 2.0f}, "./sprites/hook.bmp", renderer, zIndex + 1);
+        addChild(hook);
+        hook->hide();
+    }
+
+    ~Player() {
+        if (hook) {
+            removeChild(hook);
+            delete hook;
+        }
+    }
+
+    bool isHooking() const {
+        return hook ? hook->getVisible() : false;
+    }
+
+    void setHooking(bool hooking) {
+        if (hook) {
+            if (hooking) {
+                hook->show();
+            } else {
+                hook->hide();
+            }
+        }
+    }
 
     void onKeyDown(SDL_Keycode key) override {
         switch (key) {
@@ -38,6 +68,16 @@ public:
             case SDLK_s: moveDown = true; break;
             case SDLK_a: moveLeft = true; break;
             case SDLK_d: moveRight = true; break;
+            case SDLK_r: {
+                if (hook) {
+                    if (hook->getVisible()) {
+                        hook->hide();
+                    } else {
+                        hook->show();
+                    }
+                }
+                break;
+            }
             default: break;
         }
     }
@@ -53,7 +93,7 @@ public:
     }
 
     void update(float dt) override {
-        IAnimatable::update(dt);  // Call animation update
+        IAnimatable::update(dt);  // Always update animation
         Vector2* pos = getPosition();
         prevPosition = *pos;  // Save before movement
 
