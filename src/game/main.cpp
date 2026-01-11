@@ -34,16 +34,36 @@ static bool navigationUIActive = false;
 static SDL_Texture* navigationClockTexture = nullptr;
 static SDL_Texture* navigationIndicatorTexture = nullptr;
 
-// Fishing minigame state (timed click to catch a fish)
+// Fishing minigame state (timed click to catch a fish OR tug-of-the-deep)
 static bool fishingMinigameActive = false;
 static float fishingMinigameTimer = 0.0f;
 static float fishingMinigameDuration = 4.5f; // seconds until failure (eased)
+
+// Timed-click state
 static float fishingMinigameIndicator = 0.0f; // 0..1 moving indicator
 static float fishingMinigameIndicatorDir = 1.0f; // direction +1/-1
 static float fishingMinigameIndicatorSpeed = 0.8f; // cycles per second across 0..1 (slowed for ease)
 // Default window roughly 20% centered; actual window recalculated on start
 static float fishingMinigameWindowStart = 0.40f;
 static float fishingMinigameWindowEnd = 0.60f;
+
+// Tug-of-the-deep state
+enum MinigameType { MINIGAME_TIMED_CLICK = 0, MINIGAME_TUG_OF_THE_DEEP = 1 };
+static MinigameType fishingMinigameType = MINIGAME_TIMED_CLICK;
+static float tugProgress = 0.5f; // 0..1, player wins when low
+static float tugTension = 0.0f; // 0..1, >=1 => fail
+static float tugFishForce = 0.18f; // units per second pushing toward fish side
+static float tugBurstRemaining = 0.0f; // seconds remaining for active fish burst
+static float tugNextBurstTime = 0.0f;
+static int tugStamina = 3; // quick pulls allowed
+static float tugLastPullTime = 0.0f;
+static float tugPlayerPullLevel = 0.0f; // instantaneous pull strength
+static const float TUG_PULL_BASE = 0.12f; // base progress change per pull
+static const float TUG_PULL_BONUS = 0.08f; // bonus for quick successive pulls
+static const float TUG_MAX_FORCE = 0.6f; // used for tension normalization
+static const float TUG_WIN_THRESHOLD = 0.20f; // progress <= this = success
+static const float TUG_FAIL_THRESHOLD = 0.95f; // progress >= this = fail
+
 static Vector2 fishingMinigameHookPos{0.0f,0.0f}; // world pos where minigame triggered
 static SDL_Rect fishingMinigameScreenRect = {0,0,0,0}; // screen-space rect for minigame bar
 static std::mt19937 fishingMinigameRng(std::random_device{}());
@@ -549,18 +569,17 @@ void onHook(const Vector2& pos) {
         float dy = hookPos.y - pos.y;
         float dist2 = dx*dx + dy*dy;
         if (dist2 < 4.0f * 4.0f) { // close enough to be our hook
-            // Initialize minigame parameters
+            // Randomly select a minigame type
+            std::uniform_int_distribution<int> mgDist(0,1);
+            int pick = mgDist(fishingMinigameRng);
+            fishingMinigameType = (pick == 0) ? MINIGAME_TIMED_CLICK : MINIGAME_TUG_OF_THE_DEEP;
+
+            // Initialize common minigame parameters
             fishingMinigameActive = true;
             fishingMinigameTimer = 0.0f;
             fishingMinigameDuration = 4.5f; // eased timeout
-            fishingMinigameIndicator = 0.0f;
-            fishingMinigameIndicatorDir = 1.0f;
-            std::uniform_real_distribution<float> centerDist(0.25f, 0.75f);
-            float center = centerDist(fishingMinigameRng);
-            float width = 0.20f; // 20% target window (easier)
-            fishingMinigameWindowStart = std::max(0.0f, center - width/2.0f);
-            fishingMinigameWindowEnd = std::min(1.0f, center + width/2.0f);
             fishingMinigameHookPos = pos;
+
             // Compute initial screen rect immediately so clicks during the same frame register
             if (camera) {
                 Vector2 hookWorld = fishingMinigameHookPos;
@@ -574,7 +593,31 @@ void onHook(const Vector2& pos) {
                 sy = std::max(8, std::min(sy, WIN_HEIGHT - barH - 8));
                 fishingMinigameScreenRect = { sx, sy, barW, barH };
             }
-            SDL_Log("Fishing minigame started: window=(%.3f-%.3f) screenrect=(%d,%d,%d,%d)", fishingMinigameWindowStart, fishingMinigameWindowEnd, fishingMinigameScreenRect.x, fishingMinigameScreenRect.y, fishingMinigameScreenRect.w, fishingMinigameScreenRect.h);
+
+            if (fishingMinigameType == MINIGAME_TIMED_CLICK) {
+                // Timed-click setup
+                fishingMinigameIndicator = 0.0f;
+                fishingMinigameIndicatorDir = 1.0f;
+                std::uniform_real_distribution<float> centerDist(0.25f, 0.75f);
+                float center = centerDist(fishingMinigameRng);
+                float width = 0.20f; // 20% target window (easier)
+                fishingMinigameWindowStart = std::max(0.0f, center - width/2.0f);
+                fishingMinigameWindowEnd = std::min(1.0f, center + width/2.0f);
+                SDL_Log("Fishing minigame started: TIMED_CLICK window=(%.3f-%.3f) screenrect=(%d,%d,%d,%d)", fishingMinigameWindowStart, fishingMinigameWindowEnd, fishingMinigameScreenRect.x, fishingMinigameScreenRect.y, fishingMinigameScreenRect.w, fishingMinigameScreenRect.h);
+            } else {
+                // Tug-of-the-deep setup
+                tugProgress = 0.5f;
+                tugTension = 0.0f;
+                tugFishForce = 0.12f + (static_cast<float>(fishingMinigameRng()%30) / 300.0f); // 0.12 - 0.22
+                std::uniform_real_distribution<float> burstDist(0.8f, 2.0f);
+                tugNextBurstTime = fishingMinigameTimer + burstDist(fishingMinigameRng);
+                tugBurstRemaining = 0.0f;
+                tugStamina = 3;
+                tugLastPullTime = -10.0f;
+                tugPlayerPullLevel = 0.0f;
+                SDL_Log("Fishing minigame started: TUG_OF_THE_DEEP fishForce=%.3f screenrect=(%d,%d,%d,%d)", tugFishForce, fishingMinigameScreenRect.x, fishingMinigameScreenRect.y, fishingMinigameScreenRect.w, fishingMinigameScreenRect.h);
+            }
+
             // Do not spawn a free fish; wait for minigame result
             return;
         }
@@ -942,15 +985,6 @@ int main(int argc, char* argv[]) {
         if (fishingMinigameActive) {
             if (!navigationUIActive && !inventoryOpen) {
                 fishingMinigameTimer += static_cast<float>(dt);
-                // Move indicator across 0..1, bounce at edges
-                fishingMinigameIndicator += fishingMinigameIndicatorDir * fishingMinigameIndicatorSpeed * static_cast<float>(dt);
-                if (fishingMinigameIndicator > 1.0f) {
-                    fishingMinigameIndicator = 1.0f;
-                    fishingMinigameIndicatorDir = -fishingMinigameIndicatorDir;
-                } else if (fishingMinigameIndicator < 0.0f) {
-                    fishingMinigameIndicator = 0.0f;
-                    fishingMinigameIndicatorDir = -fishingMinigameIndicatorDir;
-                }
 
                 // Compute screen-space rectangle for the minigame bar near the hook position
                 if (camera) {
@@ -967,12 +1001,73 @@ int main(int argc, char* argv[]) {
                     fishingMinigameScreenRect = { sx, sy, barW, barH };
                 }
 
-                // Timeout: failure if not clicked within duration
-                if (fishingMinigameTimer >= fishingMinigameDuration) {
-                    SDL_Log("Fishing minigame: timeout (failed)");
-                    SoundManager::instance().playSound("escape", 0, MIX_MAX_VOLUME);
-                    if (player && player->getFishingProjectile()) player->getFishingProjectile()->retract();
-                    fishingMinigameActive = false;
+                if (fishingMinigameType == MINIGAME_TIMED_CLICK) {
+                    // Move indicator across 0..1, bounce at edges
+                    fishingMinigameIndicator += fishingMinigameIndicatorDir * fishingMinigameIndicatorSpeed * static_cast<float>(dt);
+                    if (fishingMinigameIndicator > 1.0f) {
+                        fishingMinigameIndicator = 1.0f;
+                        fishingMinigameIndicatorDir = -fishingMinigameIndicatorDir;
+                    } else if (fishingMinigameIndicator < 0.0f) {
+                        fishingMinigameIndicator = 0.0f;
+                        fishingMinigameIndicatorDir = -fishingMinigameIndicatorDir;
+                    }
+
+                    // Timeout: failure if not clicked within duration
+                    if (fishingMinigameTimer >= fishingMinigameDuration) {
+                        SDL_Log("Fishing minigame: timeout (failed)");
+                        SoundManager::instance().playSound("escape", 0, MIX_MAX_VOLUME);
+                        if (player && player->getFishingProjectile()) player->getFishingProjectile()->retract();
+                        fishingMinigameActive = false;
+                    }
+                } else if (fishingMinigameType == MINIGAME_TUG_OF_THE_DEEP) {
+                    // Tug: fish force and occasional bursts
+                    if (tugBurstRemaining > 0.0f) {
+                        // burst is active, reduce remaining
+                        tugBurstRemaining -= static_cast<float>(dt);
+                    } else if (fishingMinigameTimer >= tugNextBurstTime) {
+                        // trigger a short burst
+                        tugBurstRemaining = 0.25f + (static_cast<float>(fishingMinigameRng()%20) / 100.0f); // 0.25 - 0.45s
+                        tugNextBurstTime = fishingMinigameTimer + (0.8f + (static_cast<float>(fishingMinigameRng()%120) / 100.0f));
+                    }
+                    float activeFishForce = tugFishForce + (tugBurstRemaining > 0.0f ? 0.18f : 0.0f);
+
+                    // Apply fish force to progress
+                    tugProgress += activeFishForce * static_cast<float>(dt);
+
+                    // Decay player's pull level over time
+                    tugPlayerPullLevel = std::max(0.0f, tugPlayerPullLevel - static_cast<float>(dt) * 0.6f);
+
+                    // Recover stamina slowly
+                    if (tugLastPullTime + 1.0f < fishingMinigameTimer) {
+                        tugStamina = std::min(3, tugStamina + 1);
+                        tugLastPullTime = fishingMinigameTimer; // throttle recovery increment once
+                    }
+
+                    // Compute tension; when fish force exceeds player's pull, tension increases
+                    float tensionDelta = activeFishForce - tugPlayerPullLevel;
+                    tugTension += std::max(0.0f, tensionDelta) * 0.8f * static_cast<float>(dt);
+                    tugTension = std::clamp(tugTension, 0.0f, 1.0f);
+
+                    // Win/lose checks
+                    if (tugProgress <= TUG_WIN_THRESHOLD) {
+                        SDL_Log("Fishing minigame: TUG success! progress=%.3f", tugProgress);
+                        // success will be handled where clicks are processed (spawn fish below)
+                        // to keep consistent, set minigame inactive and spawn fish here
+                        SoundManager::instance().playSound("catch", 0, MIX_MAX_VOLUME);
+                        if (g_renderer) {
+                            GameObject* caught = new GameObject(fishingMinigameHookPos, {2.0f,2.0f}, "./sprites/fish.bmp", g_renderer, LAYER_PARTICLE);
+                            gameObjects.push_back(caught);
+                            fishesMovingToPlayer.push_back(caught);
+                            SDL_Log("Caught fish spawned at (%.2f,%.2f) and marked for collection", fishingMinigameHookPos.x, fishingMinigameHookPos.y);
+                        }
+                        if (player && player->getFishingProjectile()) player->getFishingProjectile()->retract();
+                        fishingMinigameActive = false;
+                    } else if (tugProgress >= TUG_FAIL_THRESHOLD || tugTension >= 1.0f) {
+                        SDL_Log("Fishing minigame: TUG failed. progress=%.3f tension=%.3f", tugProgress, tugTension);
+                        SoundManager::instance().playSound("escape", 0, MIX_MAX_VOLUME);
+                        if (player && player->getFishingProjectile()) player->getFishingProjectile()->retract();
+                        fishingMinigameActive = false;
+                    }
                 }
             }
         }
@@ -1011,31 +1106,81 @@ int main(int argc, char* argv[]) {
 
                     bool inside = (mx >= barBg.x && mx <= barBg.x + barBg.w && my >= barBg.y && my <= barBg.y + barBg.h);
 
-                    bool success = false;
-                    
-                    if(fishingMinigameWindowStart <= fishingMinigameIndicator && fishingMinigameIndicator <= fishingMinigameWindowEnd){
-                        success = true;
-                    }
-                    fishingMinigameAttempts++;
-                    if (success) {
-                        SDL_Log("Fishing minigame: Success! indicator=%.3f window=(%.3f-%.3f)", fishingMinigameIndicator, fishingMinigameWindowStart, fishingMinigameWindowEnd);
-                        // Play success sound
-                        SoundManager::instance().playSound("catch", 0, MIX_MAX_VOLUME);
-                        // Spawn a caught fish (visual) at the hook position and start moving it toward the player
-                        if (g_renderer) {
-                            GameObject* caught = new GameObject(fishingMinigameHookPos, {2.0f,2.0f}, "./sprites/fish.bmp", g_renderer, LAYER_PARTICLE);
-                            gameObjects.push_back(caught);
-                            fishesMovingToPlayer.push_back(caught); // mark for collection movement
-                            SDL_Log("Caught fish spawned at (%.2f,%.2f) and marked for collection", fishingMinigameHookPos.x, fishingMinigameHookPos.y);
+                    // Handle minigame-specific click logic
+                    if (fishingMinigameType == MINIGAME_TIMED_CLICK) {
+                        bool success = false;
+                        // Evaluate success using current indicator and window
+                        if (fishingMinigameWindowStart <= fishingMinigameIndicator && fishingMinigameIndicator <= fishingMinigameWindowEnd) {
+                            success = true;
                         }
-                    } else {
-                        SDL_Log("Fishing minigame: Fail. indicator=%.3f window=(%.3f-%.3f)", fishingMinigameIndicator, fishingMinigameWindowStart, fishingMinigameWindowEnd);
-                        SoundManager::instance().playSound("escape", 0, MIX_MAX_VOLUME);
+                        fishingMinigameAttempts++;
+                        if (success) {
+                            SDL_Log("Fishing minigame: Success! indicator=%.3f window=(%.3f-%.3f)", fishingMinigameIndicator, fishingMinigameWindowStart, fishingMinigameWindowEnd);
+                            SoundManager::instance().playSound("catch", 0, MIX_MAX_VOLUME);
+                            if (g_renderer) {
+                                GameObject* caught = new GameObject(fishingMinigameHookPos, {2.0f,2.0f}, "./sprites/fish.bmp", g_renderer, LAYER_PARTICLE);
+                                gameObjects.push_back(caught);
+                                fishesMovingToPlayer.push_back(caught);
+                                SDL_Log("Caught fish spawned at (%.2f,%.2f) and marked for collection", fishingMinigameHookPos.x, fishingMinigameHookPos.y);
+                            }
+                        } else {
+                            SDL_Log("Fishing minigame: Fail. indicator=%.3f window=(%.3f-%.3f)", fishingMinigameIndicator, fishingMinigameWindowStart, fishingMinigameWindowEnd);
+                            SoundManager::instance().playSound("escape", 0, MIX_MAX_VOLUME);
+                        }
+
+                        // End minigame and retract
+                        if (player && player->getFishingProjectile()) player->getFishingProjectile()->retract();
+                        fishingMinigameActive = false;
+                        continue; // consume click and suppress normal casting
+                    } else if (fishingMinigameType == MINIGAME_TUG_OF_THE_DEEP) {
+                        // Tug: clicks inside bar apply pull; clicks outside are consumed as fails (but do not necessarily end the minigame)
+                        if (!inside) {
+                            SDL_Log("TUG: Click outside bar consumed (no pull)");
+                            // Consume click but keep minigame active
+                            fishingMinigameAttempts++;
+                            continue;
+                        }
+
+                        float nowT = fishingMinigameTimer;
+                        float pull = TUG_PULL_BASE;
+                        if (nowT - tugLastPullTime < 0.45f && tugStamina > 0) {
+                            pull += TUG_PULL_BONUS;
+                            tugStamina = std::max(0, tugStamina - 1);
+                        }
+                        // Apply pull
+                        tugProgress -= pull;
+                        tugPlayerPullLevel = std::max(tugPlayerPullLevel, pull);
+                        tugLastPullTime = nowT;
+                        fishingMinigameAttempts++;
+                        SDL_Log("TUG: applied pull=%.3f progress=%.3f tension=%.3f stamina=%d", pull, tugProgress, tugTension, tugStamina);
+
+                        // Immediate success check
+                        if (tugProgress <= TUG_WIN_THRESHOLD) {
+                            SDL_Log("Fishing minigame: TUG success! progress=%.3f", tugProgress);
+                            SoundManager::instance().playSound("catch", 0, MIX_MAX_VOLUME);
+                            if (g_renderer) {
+                                GameObject* caught = new GameObject(fishingMinigameHookPos, {2.0f,2.0f}, "./sprites/fish.bmp", g_renderer, LAYER_PARTICLE);
+                                gameObjects.push_back(caught);
+                                fishesMovingToPlayer.push_back(caught);
+                                SDL_Log("Caught fish spawned at (%.2f,%.2f) and marked for collection", fishingMinigameHookPos.x, fishingMinigameHookPos.y);
+                            }
+                            if (player && player->getFishingProjectile()) player->getFishingProjectile()->retract();
+                            fishingMinigameActive = false;
+                            continue;
+                        }
+
+                        // Immediate fail check (line tension or progress)
+                        if (tugTension >= 1.0f || tugProgress >= TUG_FAIL_THRESHOLD) {
+                            SDL_Log("Fishing minigame: TUG failed. progress=%.3f tension=%.3f", tugProgress, tugTension);
+                            SoundManager::instance().playSound("escape", 0, MIX_MAX_VOLUME);
+                            if (player && player->getFishingProjectile()) player->getFishingProjectile()->retract();
+                            fishingMinigameActive = false;
+                            continue;
+                        }
+
+                        // Otherwise keep the minigame active (do not retract yet) and consume the click
+                        continue;
                     }
-                    // Retract local hook and end minigame
-                    if (player && player->getFishingProjectile()) player->getFishingProjectile()->retract();
-                    fishingMinigameActive = false;
-                    continue; // consume click and suppress normal casting
                 }
 
                 // Handle mouse click for fishing hook casting
@@ -1619,23 +1764,58 @@ int main(int argc, char* argv[]) {
             SDL_SetRenderDrawColor(renderer, 40, 40, 40, 220);
             SDL_RenderFillRect(renderer, &barBg);
 
-            // Draw success window relative to the bar
-            int winX = static_cast<int>(barBg.x + fishingMinigameWindowStart * barBg.w);
-            int winW = static_cast<int>((fishingMinigameWindowEnd - fishingMinigameWindowStart) * barBg.w);
-            SDL_Rect winRect = { winX, barBg.y, winW, barBg.h };
-            SDL_SetRenderDrawColor(renderer, 0, 200, 0, 200);
-            SDL_RenderFillRect(renderer, &winRect);
+            if (fishingMinigameType == MINIGAME_TIMED_CLICK) {
+                // Draw success window relative to the bar
+                int winX = static_cast<int>(barBg.x + fishingMinigameWindowStart * barBg.w);
+                int winW = static_cast<int>((fishingMinigameWindowEnd - fishingMinigameWindowStart) * barBg.w);
+                SDL_Rect winRect = { winX, barBg.y, winW, barBg.h };
+                SDL_SetRenderDrawColor(renderer, 0, 200, 0, 200);
+                SDL_RenderFillRect(renderer, &winRect);
 
-            // Draw indicator
-            int indX = static_cast<int>(barBg.x + fishingMinigameIndicator * barBg.w);
-            SDL_Rect indRect = { indX - 3, barBg.y - 6, 6, barBg.h + 12 };
-            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 220);
-            SDL_RenderFillRect(renderer, &indRect);
+                // Draw indicator
+                int indX = static_cast<int>(barBg.x + fishingMinigameIndicator * barBg.w);
+                SDL_Rect indRect = { indX - 3, barBg.y - 6, 6, barBg.h + 12 };
+                SDL_SetRenderDrawColor(renderer, 255, 255, 255, 220);
+                SDL_RenderFillRect(renderer, &indRect);
 
-            // Small instruction placeholder under the bar
-            SDL_Rect txt = { barBg.x, barBg.y + barBg.h + 6, barBg.w, 18 };
-            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 64);
-            SDL_RenderFillRect(renderer, &txt);
+                // Small instruction placeholder under the bar
+                SDL_Rect txt = { barBg.x, barBg.y + barBg.h + 6, barBg.w, 18 };
+                SDL_SetRenderDrawColor(renderer, 255, 255, 255, 64);
+                SDL_RenderFillRect(renderer, &txt);
+            } else if (fishingMinigameType == MINIGAME_TUG_OF_THE_DEEP) {
+                // Draw tug progress marker
+                int markX = static_cast<int>(barBg.x + tugProgress * barBg.w);
+                SDL_Rect marker = { markX - 6, barBg.y - 6, 12, barBg.h + 12 };
+                SDL_SetRenderDrawColor(renderer, 220, 220, 255, 220);
+                SDL_RenderFillRect(renderer, &marker);
+
+                // Draw tension overlay (red) proportional to tugTension
+                if (tugTension > 0.01f) {
+                    Uint8 alpha = static_cast<Uint8>(std::min(220.0f, tugTension * 220.0f));
+                    SDL_SetRenderDrawColor(renderer, 200, 0, 0, alpha);
+                    SDL_RenderFillRect(renderer, &barBg);
+                }
+
+                // Draw stamina boxes above the bar
+                for (int si = 0; si < 3; ++si) {
+                    SDL_Rect sbox = { barBg.x + si * 18, barBg.y - 22, 14, 12 };
+                    if (si < tugStamina) SDL_SetRenderDrawColor(renderer, 100, 200, 100, 220);
+                    else SDL_SetRenderDrawColor(renderer, 60, 60, 60, 180);
+                    SDL_RenderFillRect(renderer, &sbox);
+                }
+
+                // Small instruction placeholder
+                SDL_Rect txt = { barBg.x, barBg.y + barBg.h + 6, barBg.w, 18 };
+                SDL_SetRenderDrawColor(renderer, 255, 255, 255, 64);
+                SDL_RenderFillRect(renderer, &txt);
+
+                // Draw small progress text (debug)
+                // (Optional) could render text; for now a debug indicator using tiny rects
+                int progW = static_cast<int>(barBg.w * (1.0f - tugProgress));
+                SDL_Rect prog = { barBg.x, barBg.y + barBg.h + 26, progW, 6 };
+                SDL_SetRenderDrawColor(renderer, 60, 160, 220, 220);
+                SDL_RenderFillRect(renderer, &prog);
+            }
         }
 
         // Present the final frame once
