@@ -20,6 +20,13 @@ public:
         }
     }
 
+    // Emit particles from an explicit list of start positions (keeps exact positions)
+    void emitFromStarts(const std::vector<Vector2>& starts, const Vector2& end, float duration, SDL_Color color, int zIndex) {
+        for (const auto& s : starts) {
+            particles.emplace_back(s, end, duration, renderer, color, zIndex);
+        }
+    }
+
     void update(float dt) {
         for (auto& p : particles) {
             p.update(dt);

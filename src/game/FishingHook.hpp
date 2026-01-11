@@ -6,6 +6,7 @@
 #include "ParticleSystem.hpp"
 #include <random>
 #include "../audio/SoundManager.hpp"
+#include <functional>
 
 class FishingHook : public GameObject {
 private:
@@ -18,8 +19,29 @@ private:
     ParticleSystem* attractParticles = nullptr;
     bool attractPending = false;
     float attractTimer = 0.0f;
+    // Seeded attract parameters (if scheduled by network)
+    bool hasAttractSeed = false;
+    uint32_t attractSeed = 0;
+    float attractRadius = 0.0f;
+    float attractAngle = 0.0f;
+    int attractCount = 0;
+    SDL_Color attractColor{0,255,0,255};
+    float attractDuration = 0.0f;
+    int attractZIndex = 0;
+    float attractSpread = 12.0f;
+    // If host provided absolute start position, store it and use it when spawning
+    bool attractUseAbsoluteStart = false;
+    Vector2 attractAbsoluteStart{0.0f,0.0f};
+    // Whether to play attract sounds for this scheduled spawn
+    bool attractPlaySound = true;
+    // Pending explicit start positions for networked spawn
+    std::vector<Vector2> pendingStartPositions;
+    Vector2 pendingEndPosition{0.0f,0.0f};
+    float pendingDuration = 0.0f;
     std::mt19937 rng{std::random_device{}()};
     int lastAttractAliveCount = 0;
+    // Callback invoked when attract particles have finished arriving
+    std::function<void()> onAttractArrival = nullptr;
 
 public:
     FishingHook(Vector2 pos, Vector2 sizeMultiplier, const char* spritePath, SDL_Renderer* renderer, int zIndex = 2)
@@ -40,9 +62,14 @@ public:
         return &targetPos;
     }
 
+    // Register a callback to be invoked when attract particles finish
+    void setOnAttractArrival(std::function<void()> cb) {
+        onAttractArrival = cb;
+    }
+
     // Ensure all positions are world coordinates
     // When casting, set position and targetPos in world coordinates
-    void cast(Vector2 startPos, Vector2 direction, Vector2 mousePos, float castSpeed = 200.0f) {
+    void cast(Vector2 startPos, Vector2 direction, Vector2 mousePos, float castSpeed = 200.0f, bool playAttractSound = true) {
         Vector2* pos = getPosition();
         pos->x = startPos.x;
         pos->y = startPos.y;
@@ -58,11 +85,15 @@ public:
         }
         isActive = true;
         setVisible(true);
-        // Schedule attract particles to spawn after a random delay
+        // Schedule attract particles to spawn after a random delay (local-only)
         // Make delays always longer than the previous range (0.5-2.5s)
-        std::uniform_real_distribution<float> delayDist(2.6f, 5.0f);
-        attractTimer = delayDist(rng);
-        attractPending = true;
+        if (!hasAttractSeed) {
+            std::uniform_real_distribution<float> delayDist(2.6f, 5.0f);
+            attractTimer = delayDist(rng);
+            attractPending = true;
+            attractPlaySound = playAttractSound;
+            attractUseAbsoluteStart = false;
+        }
     }
 
     void update(float dt) override {
@@ -94,22 +125,36 @@ public:
         if (attractPending) {
             attractTimer -= dt;
             if (attractTimer <= 0.0f) {
-                // Spawn particles at a random distance from the hook and move them toward the hook
+                // Compute spawn parameters. If scheduled via seed, use stored radius/angle; otherwise randomize now
                 Vector2 hookPos = getWorldPosition();
-                std::uniform_real_distribution<float> radiusDist(40.0f, 140.0f);
-                std::uniform_real_distribution<float> angleDist(0.0f, 2.0f * 3.14159265f);
-                float radius = radiusDist(rng);
-                float angle = angleDist(rng);
-                Vector2 startCenter = { hookPos.x + std::cos(angle) * radius, hookPos.y + std::sin(angle) * radius };
+                float radius = attractRadius;
+                float angle = attractAngle;
+                if (!hasAttractSeed) {
+                    std::uniform_real_distribution<float> radiusDist(40.0f, 140.0f);
+                    std::uniform_real_distribution<float> angleDist(0.0f, 2.0f * 3.14159265f);
+                    radius = radiusDist(rng);
+                    angle = angleDist(rng);
+                }
+                Vector2 startCenter;
+                if (attractUseAbsoluteStart) {
+                    startCenter = attractAbsoluteStart;
+                } else {
+                    startCenter = { hookPos.x + std::cos(angle) * radius, hookPos.y + std::sin(angle) * radius };
+                }
                 // Emit particles that move from startCenter toward the current hook position
                 if (attractParticles) {
-                    // Slower, fewer, and slightly tighter-spread attract particles
-                    attractParticles->emit(startCenter, hookPos, 10, SDL_Color{0, 255, 0, 255}, 4.5f, 4, 12.0f);
-                    // Play attract spawn sound
-                    SoundManager::instance().playSound("attract_spawn", 0, MIX_MAX_VOLUME);
-                    lastAttractAliveCount = 10;
+                    int count = attractCount > 0 ? attractCount : 10;
+                    SDL_Color col = attractColor;
+                    float dur = attractDuration > 0.0f ? attractDuration : 4.5f;
+                    int zidx = attractZIndex > 0 ? attractZIndex : 4;
+                    float spr = attractSpread;
+                    attractParticles->emit(startCenter, hookPos, count, col, dur, zidx, spr);
+                    // Play attract spawn sound only if allowed for this scheduled spawn
+                    if (attractPlaySound) SoundManager::instance().playSound("attract_spawn", 0, MIX_MAX_VOLUME);
+                    lastAttractAliveCount = count;
                 }
                 attractPending = false;
+                hasAttractSeed = false;
             }
         }
         if (attractParticles) {
@@ -120,8 +165,10 @@ public:
                 if (p.alive) ++alive;
             }
             if (lastAttractAliveCount > 0 && alive == 0) {
-                // Play arrival sound once
-                SoundManager::instance().playSound("attract_arrival", 0, MIX_MAX_VOLUME);
+                // Play arrival sound once, only if allowed for this spawn
+                if (attractPlaySound) SoundManager::instance().playSound("attract_arrival", 0, MIX_MAX_VOLUME);
+                // Invoke optional arrival callback
+                if (onAttractArrival) onAttractArrival();
                 lastAttractAliveCount = 0;
             } else {
                 lastAttractAliveCount = alive;
@@ -135,6 +182,46 @@ public:
         if (attractParticles) attractParticles->getParticles().clear();
         setVisible(false);
         velocity = {0.0f, 0.0f};
+    }
+
+    // Schedule an attract spawn using explicit particle start positions (networked)
+    void scheduleAttractFromPositions(const std::vector<Vector2>& starts, const Vector2& end, float delay, SDL_Color color, float duration, int zIndex, bool playSound = false) {
+        pendingStartPositions = starts;
+        pendingEndPosition = end;
+        pendingDuration = duration;
+        attractPlaySound = playSound;
+        attractPending = true;
+        attractTimer = delay;
+    }
+
+    // Schedule attract spawn deterministically from a seed (does not emit immediately)
+    // If useAbsoluteStart==true, `absoluteStart` is used for particle origin; otherwise host/client compute relative start
+    void scheduleAttractFromSeed(uint32_t seed, int count, SDL_Color color, float duration, int zIndex, float spread = 12.0f, Vector2 absoluteStart = {0,0}, bool useAbsoluteStart = false, bool playSound = true) {
+        attractSeed = seed;
+        hasAttractSeed = true;
+        attractCount = count;
+        attractColor = color;
+        attractDuration = duration;
+        attractZIndex = zIndex;
+        attractSpread = spread;
+        attractUseAbsoluteStart = useAbsoluteStart;
+        attractAbsoluteStart = absoluteStart;
+        attractPlaySound = playSound;
+        // Seed temporary RNG to compute delay and radius/angle deterministically
+        std::mt19937 tmp(seed);
+        std::uniform_real_distribution<float> delayDist(2.6f, 5.0f);
+        std::uniform_real_distribution<float> radiusDist(40.0f, 140.0f);
+        std::uniform_real_distribution<float> angleDist(0.0f, 2.0f * 3.14159265f);
+        attractTimer = delayDist(tmp);
+        attractRadius = radiusDist(tmp);
+        attractAngle = angleDist(tmp);
+        attractPending = true;
+    }
+
+    void cancelPendingAttract() {
+        attractPending = false;
+        hasAttractSeed = false;
+        attractTimer = 0.0f;
     }
 
     bool getIsActive() const {
@@ -173,5 +260,13 @@ public:
     // Render particles (called from main render loop)
     void renderParticles(SDL_Renderer* renderer, const Vector2& cameraOffset, float cameraZoom) {
         if (attractParticles) attractParticles->render(renderer, cameraOffset, cameraZoom);
+    }
+
+    // Spawn attract particles immediately (used by networked spawn)
+    void spawnAttractParticles(const Vector2& startCenter, const Vector2& hookPos, int count, SDL_Color color, float duration, int zIndex, float spread = 12.0f) {
+        if (attractParticles) {
+            attractParticles->emit(startCenter, hookPos, count, color, duration, zIndex, spread);
+            lastAttractAliveCount = count;
+        }
     }
 };

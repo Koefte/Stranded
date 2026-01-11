@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <random>
 
 #include "Camera.hpp" 
 #include "GameObject.hpp"
@@ -50,6 +51,8 @@ static std::unordered_map<uint32_t, Player*> remotePlayers;
 static bool clientBoardingRequest = false;
 static bool clientBoatMovementToggle = false;
 static bool clientHookToggle = false;
+// RNG for networked events
+static std::mt19937 netRng(std::random_device{}());
 
 #pragma pack(push, 1)
 struct ChunkPacket {
@@ -57,6 +60,49 @@ struct ChunkPacket {
     int32_t cx;
     int32_t cy;
     uint32_t seed;
+};
+#pragma pack(pop)
+
+#pragma pack(push, 1)
+struct ParticlePacket {
+    uint32_t magic; // 'PART'
+    uint32_t ownerId;
+    uint32_t seed;
+    float startX;
+    float startY;
+    float destX;
+    float destY;
+    uint8_t count;
+    float duration;
+    int32_t zIndex;
+    float spread;
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+    uint8_t a;
+};
+#pragma pack(pop)
+
+// Header for packet containing explicit particle start positions
+#pragma pack(push, 1)
+struct ParticlePositionsHeader {
+    uint32_t magic; // 'PPOS'
+    uint32_t ownerId;
+    float delay; // seconds until spawn
+    uint8_t count; // number of particle start positions
+    float duration; // particle lifetime
+    int32_t zIndex;
+    float destX;
+    float destY;
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+    uint8_t a;
+};
+
+struct ParticlePos {
+    float sx;
+    float sy;
 };
 #pragma pack(pop)
 
@@ -188,13 +234,12 @@ void sendInputPacket() {
     lastMouseDown = mouseDown;
     lastMouseX = mouseX;
     lastMouseY = mouseY;
-    // Convert mouse screen coordinates to world coordinates using local camera
+    // Convert mouse screen coordinates to world coordinates using camera transform
+    // (match Player::onMouseDown: world = mouse / zoom + cameraOffset)
     float zoom = camera ? camera->getZoom() : 1.0f;
     Vector2 camPos = camera ? camera->getPosition() : Vector2{0,0};
-    // Calculate hook target in world coordinates relative to player position
-    Vector2* playerWorld = player->getPosition();
-    float worldX = playerWorld->x + ((static_cast<float>(mouseX) - WIN_WIDTH / 2.0f) / zoom);
-    float worldY = playerWorld->y + ((static_cast<float>(mouseY) - WIN_HEIGHT / 2.0f) / zoom);
+    float worldX = (static_cast<float>(mouseX) / zoom) + camPos.x;
+    float worldY = (static_cast<float>(mouseY) / zoom) + camPos.y;
     // Debug: Log mouse and world coordinates
     //printf("Client: mouse (%d, %d) -> world (%.2f, %.2f)\n", mouseX, mouseY, worldX, worldY);
     // For the hook target, use the same as worldX/worldY (can be customized if needed)
@@ -203,15 +248,12 @@ void sendInputPacket() {
     // Debug: Log the hook target being sent
     printf("Client: sending hook target (X: %d, Y: %d) [world: %.2f, %.2f]\n", hookTargetX, hookTargetY, worldX, worldY);
     
-    // Calculate rod tip local position (relative to player)
-    Vector2* rodPos = player->getRod()->getPosition();
-    Vector2* rodSize = player->getRod()->getSize();
-    float hookStartLocalX = rodPos->x + rodSize->x / 2.0f;
-    float hookStartLocalY = rodPos->y + rodSize->y;
-    // Convert to world coordinates
-    playerWorld = player->getPosition();
-    float hookStartX = playerWorld->x + hookStartLocalX;
-    float hookStartY = playerWorld->y + hookStartLocalY;
+    // Calculate rod tip world position (match Player::onMouseDown and host computation)
+    Rod* rod = player->getRod();
+    Vector2 rodWorld = rod->getWorldPosition();
+    Vector2* rodSize = rod->getSize();
+    float hookStartX = rodWorld.x + rodSize->x / 2.0f;
+    float hookStartY = rodWorld.y + rodSize->y;
     // Log the rod tip world position being sent
     InputPacket pkt{clientId, inputSeq++, moveFlags, boardBoat, toggleBoatMovement, hasBoatControl, toggleHook, navDir.x, navDir.y, sendMouseDown, static_cast<int32_t>(worldX), static_cast<int32_t>(worldY), hookTargetX, hookTargetY};
     pkt.hookStartX = static_cast<int32_t>(hookStartX);
@@ -289,15 +331,69 @@ void receiveInputs() {
                     remote->onKeyDown(SDLK_r);
                 }
                 // Handle mouse click for fishing hook casting
-                if (pkt.mouseDown == 1 && remote->isRodVisible() && remote->getFishingProjectile()) {
-                    // Log the rod tip world position and hook target received from the client
-                    printf("Host: rod tip world from client %u (%.2f, %.2f)\n", pkt.clientId, (float)pkt.hookStartX, (float)pkt.hookStartY);
-                    printf("Host: received hook target (X: %d, Y: %d)\n", pkt.hookTargetX, pkt.hookTargetY);
+                    if (pkt.mouseDown == 1 && remote->isRodVisible() && remote->getFishingProjectile()) {
+                    // Use client-sent rod tip world position as the authoritative cast origin
                     Vector2 hookTip = { static_cast<float>(pkt.hookStartX), static_cast<float>(pkt.hookStartY) };
+                    printf("Host: received rod tip for client %u (%.2f, %.2f)\n", pkt.clientId, hookTip.x, hookTip.y);
+                    printf("Host: received hook target (X: %d, Y: %d)\n", pkt.hookTargetX, pkt.hookTargetY);
                     Vector2 target = { static_cast<float>(pkt.hookTargetX), static_cast<float>(pkt.hookTargetY) };
                     Vector2 direction = { target.x - hookTip.x, target.y - hookTip.y };
                     remote->getFishingProjectile()->retract();
                     remote->getFishingProjectile()->cast(hookTip, direction, target);
+                    // Host computes exact particle start positions now, sends them and a delay so clients spawn identically
+                    const int count = 10;
+                    const float duration = 4.5f;
+                    const int zidx = LAYER_PARTICLE;
+                    const float spread = 12.0f;
+                    // Compute spawn delay deterministically on host
+                    std::uniform_real_distribution<float> delayDist(2.6f, 5.0f);
+                    float delay = delayDist(netRng);
+                    // Compute start center and then per-particle noisy starts
+                    std::uniform_real_distribution<float> radiusDist(40.0f, 140.0f);
+                    std::uniform_real_distribution<float> angleDist(0.0f, 2.0f * 3.14159265f);
+                    std::uniform_real_distribution<float> noiseDist(-spread, spread);
+                    float radius = radiusDist(netRng);
+                    float angle = angleDist(netRng);
+                    Vector2 startCenter = { hookTip.x + std::cos(angle) * radius, hookTip.y + std::sin(angle) * radius };
+                    std::vector<ParticlePos> starts;
+                    starts.reserve(count);
+                    for (int i = 0; i < count; ++i) {
+                        ParticlePos p;
+                        p.sx = startCenter.x + noiseDist(netRng);
+                        p.sy = startCenter.y + noiseDist(netRng);
+                        starts.push_back(p);
+                    }
+
+                    ParticlePositionsHeader hdr{};
+                    hdr.magic = 0x534F5050; // 'PPOS'
+                    hdr.ownerId = pkt.clientId;
+                    hdr.delay = delay;
+                    hdr.count = static_cast<uint8_t>(count);
+                    hdr.duration = duration;
+                    hdr.zIndex = zidx;
+                    hdr.destX = hookTip.x;
+                    hdr.destY = hookTip.y;
+                    hdr.r = 0; hdr.g = 255; hdr.b = 0; hdr.a = 255;
+
+                    size_t totalSize = sizeof(hdr) + sizeof(ParticlePos) * starts.size();
+                    UDPpacket* out = SDLNet_AllocPacket(static_cast<int>(totalSize));
+                    std::memcpy(out->data, &hdr, sizeof(hdr));
+                    std::memcpy(out->data + sizeof(hdr), starts.data(), sizeof(ParticlePos) * starts.size());
+                    out->len = static_cast<uint16_t>(totalSize);
+                    for (auto& addr : clientAddrs) {
+                        out->address = addr;
+                        SDLNet_UDP_Send(udpSocket, -1, out);
+                    }
+                    SDLNet_FreePacket(out);
+
+                    // Schedule host-side spawn using the explicit starts so host matches clients
+                    if (remote->getFishingProjectile()) {
+                        std::vector<Vector2> hostStarts;
+                        hostStarts.reserve(count);
+                        for (auto &ppos : starts) hostStarts.push_back({ppos.sx, ppos.sy});
+                        remote->getFishingProjectile()->cancelPendingAttract();
+                        remote->getFishingProjectile()->scheduleAttractFromPositions(hostStarts, hookTip, delay, SDL_Color{0,255,0,255}, duration, zidx, (pkt.clientId == clientId));
+                    }
                 }
             }
         }
@@ -462,7 +558,7 @@ int main(int argc, char* argv[]) {
     }
 
     SDL_Window* window = SDL_CreateWindow(
-        "Fish Game  ",
+        ("Fish Game  " + std::string(isHost ? "(Host)" : "(Client)")).c_str(),// Add host client info to title
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
         WIN_WIDTH,
@@ -760,6 +856,36 @@ int main(int argc, char* argv[]) {
             // Modified to process both snapshots and chunk packets
             UDPpacket* in = SDLNet_AllocPacket(2048);
             while (SDLNet_UDP_Recv(udpSocket, in)) {
+                // Check for particle packet first
+                if (in->len >= sizeof(ParticlePositionsHeader)) {
+                    ParticlePositionsHeader hdr;
+                    std::memcpy(&hdr, in->data, sizeof(ParticlePositionsHeader));
+                    if (hdr.magic == 0x534F5050) { // 'PPOS'
+                        size_t expected = sizeof(ParticlePositionsHeader) + static_cast<size_t>(hdr.count) * sizeof(ParticlePos);
+                        if (in->len >= expected) {
+                            ParticlePos* arr = reinterpret_cast<ParticlePos*>(in->data + sizeof(ParticlePositionsHeader));
+                            Player* targetPlayer = nullptr;
+                            // If the packet owner is this client, apply to local player instead of creating a remote
+                            if (hdr.ownerId == clientId) {
+                                targetPlayer = player;
+                            } else {
+                                targetPlayer = getOrCreateRemotePlayer(hdr.ownerId);
+                            }
+                            if (targetPlayer && targetPlayer->getFishingProjectile()) {
+                                std::vector<Vector2> starts;
+                                starts.reserve(hdr.count);
+                                for (uint8_t i = 0; i < hdr.count; ++i) {
+                                    starts.push_back({arr[i].sx, arr[i].sy});
+                                }
+                                SDL_Color col{hdr.r, hdr.g, hdr.b, hdr.a};
+                                bool playSound = (hdr.ownerId == clientId);
+                                targetPlayer->getFishingProjectile()->cancelPendingAttract();
+                                targetPlayer->getFishingProjectile()->scheduleAttractFromPositions(starts, {hdr.destX, hdr.destY}, hdr.delay, col, hdr.duration, hdr.zIndex, playSound);
+                            }
+                        }
+                        continue; // processed
+                    }
+                }
                 // Check for chunk packet first
                 if (in->len >= sizeof(ChunkPacket)) {
                     ChunkPacket cp;
@@ -840,27 +966,7 @@ int main(int argc, char* argv[]) {
                                 // Handle remote player boarding state
                                 bool wasOnBoat = boat->isPlayerOnBoard(remote);
                                 bool shouldBeOnBoat = states[i].isOnBoat != 0;
-                                // Sync fishing hook for remote player only
-                                if (remote->getFishingProjectile()) {
-                                    if (states[i].fishingHookActive) {
-                                        Vector2 hookPos = {states[i].fishingHookX, states[i].fishingHookY};
-                                        Vector2 hookTarget = {states[i].fishingHookTargetX, states[i].fishingHookTargetY};
-                                        if (!remote->getFishingProjectile()->getIsActive()) {
-                                            // Use the correct target for remote cast
-                                            Vector2 direction = {hookTarget.x - hookPos.x, hookTarget.y - hookPos.y};
-                                            remote->getFishingProjectile()->cast(hookPos, direction, hookTarget, 200.0f);
-                                        }
-                                        // Always update position and ensure visible if active
-                                        Vector2* pos = remote->getFishingProjectile()->getPosition();
-                                        pos->x = hookPos.x;
-                                        pos->y = hookPos.y;
-                                        remote->getFishingProjectile()->setVisible(true);
-                                    } else {
-                                        if (remote->getFishingProjectile()->getIsActive()) {
-                                            remote->getFishingProjectile()->retract();
-                                        }
-                                    }
-                                }
+                                // (fishing hook syncing moved below to ensure boarding/position changes applied first)
                                 
                                 if (shouldBeOnBoat && !wasOnBoat) {
                                     Vector2* rpos = remote->getPosition();
@@ -886,6 +992,28 @@ int main(int argc, char* argv[]) {
                                 
                                 remote->setVelocity({states[i].vx, states[i].vy});
                                 remote->setRodVisible(states[i].isHooking != 0);
+                                // Sync fishing hook for remote player only (after applying boarding/position)
+                                if (remote->getFishingProjectile()) {
+                                    if (states[i].fishingHookActive) {
+                                        Vector2 hookPos = {states[i].fishingHookX, states[i].fishingHookY};
+                                        Vector2 hookTarget = {states[i].fishingHookTargetX, states[i].fishingHookTargetY};
+                                        if (!remote->getFishingProjectile()->getIsActive()) {
+                                            // Use the correct target for remote cast
+                                            Vector2 direction = {hookTarget.x - hookPos.x, hookTarget.y - hookPos.y};
+                                            // When reproducing remote casts from snapshots, do not play attract sounds on this client
+                                            remote->getFishingProjectile()->cast(hookPos, direction, hookTarget, 200.0f, false);
+                                        }
+                                        // Always update position and ensure visible if active
+                                        Vector2* pos = remote->getFishingProjectile()->getPosition();
+                                        pos->x = hookPos.x;
+                                        pos->y = hookPos.y;
+                                        remote->getFishingProjectile()->setVisible(true);
+                                    } else {
+                                        if (remote->getFishingProjectile()->getIsActive()) {
+                                            remote->getFishingProjectile()->retract();
+                                        }
+                                    }
+                                }
                             }
                         }
                         continue;
