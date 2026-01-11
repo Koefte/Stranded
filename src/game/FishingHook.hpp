@@ -21,13 +21,23 @@ public:
         setVisible(false);
     }
 
+    Vector2 getTargetPos() const {
+        return targetPos;
+    }
+
+    Vector2* getTargetPosPtr() {
+        return &targetPos;
+    }
+
+    // Ensure all positions are world coordinates
+    // When casting, set position and targetPos in world coordinates
     void cast(Vector2 startPos, Vector2 direction, Vector2 mousePos, float castSpeed = 200.0f) {
         Vector2* pos = getPosition();
         pos->x = startPos.x;
         pos->y = startPos.y;
-        // Store the origin point for line rendering
+        // Store the origin point for line rendering (world coordinates)
         lineOrigin = startPos;
-        // Set the target position (mouse)
+        // Set the target position (world coordinates)
         targetPos = mousePos;
         // Normalize direction and apply speed
         float length = std::sqrt(direction.x * direction.x + direction.y * direction.y);

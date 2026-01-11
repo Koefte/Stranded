@@ -65,6 +65,13 @@ struct InputPacket {
     uint8_t toggleHook; // 0=no action, 1=toggle hook
     float boatNavDirX;
     float boatNavDirY;
+    uint8_t mouseDown; // 0 = none, 1 = left click
+    int32_t mouseX;
+    int32_t mouseY;
+    int32_t hookTargetX;
+    int32_t hookTargetY;
+    int32_t hookStartX;
+    int32_t hookStartY;
 };
 
 struct BoatState {
@@ -81,6 +88,9 @@ struct PlayerState {
     uint8_t animFrame;
     uint8_t isOnBoat; // 0 = not on boat, 1 = on boat
     uint8_t isHooking; // 0 = not hooking, 1 = hooking
+    uint8_t fishingHookActive; // 0 = not active, 1 = active
+    float fishingHookX, fishingHookY; // world position of hook
+    float fishingHookTargetX, fishingHookTargetY; // mouse destination
 };
 
 struct SnapshotHeader {
@@ -120,7 +130,10 @@ Player* getOrCreateRemotePlayer(uint32_t id) {
     };
     Player* remote = new Player({0.0f, 0.0f}, {2.0f, 2.0f}, remoteSprites, 4, g_renderer, 0.1f, LAYER_PLAYER);
     remotePlayers[id] = remote;
-    gameObjects.push_back(remote); // Immediately add to render list
+    gameObjects.push_back(remote); // Add player
+    if (remote->getFishingProjectile()) {
+        gameObjects.push_back(remote->getFishingProjectile()); // Add their fishing hook for rendering
+    }
     std::cout << "Created remote player with ID: " << id << "\n";
     return remote;
 }
@@ -151,7 +164,50 @@ void sendInputPacket() {
     uint8_t hasBoatControl = navigationUIActive ? 1 : 0;
     Vector2 navDir = boat->getNavigationDirection();
     
-    InputPacket pkt{clientId, inputSeq++, moveFlags, boardBoat, toggleBoatMovement, hasBoatControl, toggleHook, navDir.x, navDir.y};
+    static uint8_t lastMouseDown = 0;
+    static int32_t lastMouseX = 0, lastMouseY = 0;
+    uint8_t mouseDown = 0;
+    int32_t mouseX = 0, mouseY = 0;
+    int buttons = SDL_GetMouseState(&mouseX, &mouseY);
+    if ((buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0) {
+        mouseDown = 1;
+    }
+    // Only send mouseDown if it changed (edge trigger)
+    uint8_t sendMouseDown = 0;
+    if (mouseDown && !lastMouseDown) {
+        sendMouseDown = 1;
+    }
+    lastMouseDown = mouseDown;
+    lastMouseX = mouseX;
+    lastMouseY = mouseY;
+    // Convert mouse screen coordinates to world coordinates using local camera
+    float zoom = camera ? camera->getZoom() : 1.0f;
+    Vector2 camPos = camera ? camera->getPosition() : Vector2{0,0};
+    // Calculate hook target in world coordinates relative to player position
+    Vector2* playerWorld = player->getPosition();
+    float worldX = playerWorld->x + ((static_cast<float>(mouseX) - WIN_WIDTH / 2.0f) / zoom);
+    float worldY = playerWorld->y + ((static_cast<float>(mouseY) - WIN_HEIGHT / 2.0f) / zoom);
+    // Debug: Log mouse and world coordinates
+    //printf("Client: mouse (%d, %d) -> world (%.2f, %.2f)\n", mouseX, mouseY, worldX, worldY);
+    // For the hook target, use the same as worldX/worldY (can be customized if needed)
+    int32_t hookTargetX = static_cast<int32_t>(worldX);
+    int32_t hookTargetY = static_cast<int32_t>(worldY);
+    // Debug: Log the hook target being sent
+    printf("Client: sending hook target (X: %d, Y: %d) [world: %.2f, %.2f]\n", hookTargetX, hookTargetY, worldX, worldY);
+    
+    // Calculate rod tip local position (relative to player)
+    Vector2* rodPos = player->getRod()->getPosition();
+    Vector2* rodSize = player->getRod()->getSize();
+    float hookStartLocalX = rodPos->x + rodSize->x / 2.0f;
+    float hookStartLocalY = rodPos->y + rodSize->y;
+    // Convert to world coordinates
+    playerWorld = player->getPosition();
+    float hookStartX = playerWorld->x + hookStartLocalX;
+    float hookStartY = playerWorld->y + hookStartLocalY;
+    // Log the rod tip world position being sent
+    InputPacket pkt{clientId, inputSeq++, moveFlags, boardBoat, toggleBoatMovement, hasBoatControl, toggleHook, navDir.x, navDir.y, sendMouseDown, static_cast<int32_t>(worldX), static_cast<int32_t>(worldY), hookTargetX, hookTargetY};
+    pkt.hookStartX = static_cast<int32_t>(hookStartX);
+    pkt.hookStartY = static_cast<int32_t>(hookStartY);
     UDPpacket* out = SDLNet_AllocPacket(sizeof(pkt));
     std::memcpy(out->data, &pkt, sizeof(pkt));
     out->len = sizeof(pkt);
@@ -224,6 +280,17 @@ void receiveInputs() {
                 if (pkt.toggleHook == 1) {
                     remote->onKeyDown(SDLK_r);
                 }
+                // Handle mouse click for fishing hook casting
+                if (pkt.mouseDown == 1 && remote->isRodVisible() && remote->getFishingProjectile()) {
+                    // Log the rod tip world position and hook target received from the client
+                    printf("Host: rod tip world from client %u (%.2f, %.2f)\n", pkt.clientId, (float)pkt.hookStartX, (float)pkt.hookStartY);
+                    printf("Host: received hook target (X: %d, Y: %d)\n", pkt.hookTargetX, pkt.hookTargetY);
+                    Vector2 hookTip = { static_cast<float>(pkt.hookStartX), static_cast<float>(pkt.hookStartY) };
+                    Vector2 target = { static_cast<float>(pkt.hookTargetX), static_cast<float>(pkt.hookTargetY) };
+                    Vector2 direction = { target.x - hookTip.x, target.y - hookTip.y };
+                    remote->getFishingProjectile()->retract();
+                    remote->getFishingProjectile()->cast(hookTip, direction, target);
+                }
             }
         }
     }
@@ -261,16 +328,34 @@ void broadcastSnapshot() {
     Vector2 pos = player->getWorldPosition();
     Vector2 vel = player->getVelocity();
     uint8_t onBoat = boat->isPlayerOnBoard(player) ? 1 : 0;
-    uint8_t hooking = player->isHooking() ? 1 : 0;
-    states.push_back({0, pos.x, pos.y, vel.x, vel.y, 0, onBoat, hooking});
+    uint8_t hooking = player->isRodVisible() ? 1 : 0;
+    uint8_t fishingHookActive = player->getFishingProjectile() && player->getFishingProjectile()->getIsActive() ? 1 : 0;
+    float fishingHookX = 0.0f, fishingHookY = 0.0f, fishingHookTargetX = 0.0f, fishingHookTargetY = 0.0f;
+    if (fishingHookActive) {
+        Vector2 hookPos = player->getFishingProjectile()->getWorldPosition();
+        fishingHookX = hookPos.x;
+        fishingHookY = hookPos.y;
+        fishingHookTargetX = player->getFishingProjectile()->getTargetPos().x;
+        fishingHookTargetY = player->getFishingProjectile()->getTargetPos().y;
+    }
+    states.push_back({0, pos.x, pos.y, vel.x, vel.y, 0, onBoat, hooking, fishingHookActive, fishingHookX, fishingHookY, fishingHookTargetX, fishingHookTargetY});
     
     // Add remote players
     for (auto& [id, p] : remotePlayers) {
         Vector2 rpos = p->getWorldPosition();
         Vector2 rvel = p->getVelocity();
         uint8_t rOnBoat = boat->isPlayerOnBoard(p) ? 1 : 0;
-        uint8_t rHooking = p->isHooking() ? 1 : 0;
-        states.push_back({id, rpos.x, rpos.y, rvel.x, rvel.y, 0, rOnBoat, rHooking});
+        uint8_t rHooking = p->isRodVisible() ? 1 : 0;
+        uint8_t rFishingHookActive = p->getFishingProjectile() && p->getFishingProjectile()->getIsActive() ? 1 : 0;
+        float rFishingHookX = 0.0f, rFishingHookY = 0.0f, rFishingHookTargetX = 0.0f, rFishingHookTargetY = 0.0f;
+        if (rFishingHookActive) {
+            Vector2 hookPos = p->getFishingProjectile()->getWorldPosition();
+            rFishingHookX = hookPos.x;
+            rFishingHookY = hookPos.y;
+            rFishingHookTargetX = p->getFishingProjectile()->getTargetPos().x;
+            rFishingHookTargetY = p->getFishingProjectile()->getTargetPos().y;
+        }
+        states.push_back({id, rpos.x, rpos.y, rvel.x, rvel.y, 0, rOnBoat, rHooking, rFishingHookActive, rFishingHookX, rFishingHookY, rFishingHookTargetX, rFishingHookTargetY});
     }
     
     // Boat state
@@ -515,12 +600,12 @@ int main(int argc, char* argv[]) {
     gameObjects.push_back(lighthouseGround);
     
     // Add fishing hooks to game objects
-    if (player->getFishingHook()) {
-        gameObjects.push_back(player->getFishingHook());
+    if (player->getFishingProjectile()) {
+        gameObjects.push_back(player->getFishingProjectile());
     }
     for (auto& [id, remote] : remotePlayers) {
-        if (remote->getFishingHook()) {
-            gameObjects.push_back(remote->getFishingHook());
+        if (remote->getFishingProjectile()) {
+            gameObjects.push_back(remote->getFishingProjectile());
         }
     }
     
@@ -715,7 +800,8 @@ int main(int argc, char* argv[]) {
                                 }
                                 
                                 player->setVelocity({states[i].vx, states[i].vy});
-                                player->setHooking(states[i].isHooking != 0);
+                                player->setRodVisible(states[i].isHooking != 0);
+                                // Do NOT sync local player's fishing hook from network snapshot (client should control its own hook)
                             } else {
                                 Player* remote = getOrCreateRemotePlayer(states[i].id);
                                 if (!remote) continue;
@@ -723,6 +809,27 @@ int main(int argc, char* argv[]) {
                                 // Handle remote player boarding state
                                 bool wasOnBoat = boat->isPlayerOnBoard(remote);
                                 bool shouldBeOnBoat = states[i].isOnBoat != 0;
+                                // Sync fishing hook for remote player only
+                                if (remote->getFishingProjectile()) {
+                                    if (states[i].fishingHookActive) {
+                                        Vector2 hookPos = {states[i].fishingHookX, states[i].fishingHookY};
+                                        Vector2 hookTarget = {states[i].fishingHookTargetX, states[i].fishingHookTargetY};
+                                        if (!remote->getFishingProjectile()->getIsActive()) {
+                                            // Use the correct target for remote cast
+                                            Vector2 direction = {hookTarget.x - hookPos.x, hookTarget.y - hookPos.y};
+                                            remote->getFishingProjectile()->cast(hookPos, direction, hookTarget, 200.0f);
+                                        }
+                                        // Always update position and ensure visible if active
+                                        Vector2* pos = remote->getFishingProjectile()->getPosition();
+                                        pos->x = hookPos.x;
+                                        pos->y = hookPos.y;
+                                        remote->getFishingProjectile()->setVisible(true);
+                                    } else {
+                                        if (remote->getFishingProjectile()->getIsActive()) {
+                                            remote->getFishingProjectile()->retract();
+                                        }
+                                    }
+                                }
                                 
                                 if (shouldBeOnBoat && !wasOnBoat) {
                                     Vector2* rpos = remote->getPosition();
@@ -747,7 +854,7 @@ int main(int argc, char* argv[]) {
                                 }
                                 
                                 remote->setVelocity({states[i].vx, states[i].vy});
-                                remote->setHooking(states[i].isHooking != 0);
+                                remote->setRodVisible(states[i].isHooking != 0);
                             }
                         }
                         continue;
@@ -827,12 +934,12 @@ int main(int argc, char* argv[]) {
         camera->render(renderer,gameObjects);
 
         // Render fishing lines after game objects but before UI
-        if (player->getFishingHook()) {
-            player->getFishingHook()->renderLine(renderer, camera->getPosition(), camera->getZoom());
+        if (player->getFishingProjectile()) {
+            player->getFishingProjectile()->renderLine(renderer, camera->getPosition(), camera->getZoom());
         }
         for (auto& [id, remote] : remotePlayers) {
-            if (remote->getFishingHook()) {
-                remote->getFishingHook()->renderLine(renderer, camera->getPosition(), camera->getZoom());
+            if (remote->getFishingProjectile()) {
+                remote->getFishingProjectile()->renderLine(renderer, camera->getPosition(), camera->getZoom());
             }
         }
 
