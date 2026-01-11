@@ -6,6 +6,7 @@
 #include "Vector2.hpp"
 #include "GameObject.hpp"
 #include <algorithm>
+#include "UIGameObject.hpp"
 
 
 class Camera{
@@ -77,7 +78,32 @@ class Camera{
         gameObjects = sortByZIndex(gameObjects);
 
         for(GameObject* obj: gameObjects){
-            renderObject(renderer, obj);
+            if(dynamic_cast<UIGameObject*>(obj)) {
+                    // Draw UI GameObjects without camera transformation
+                    Vector2 worldPos = obj->getWorldPosition();
+            Vector2* objSize = obj->getSize();
+            
+            // Apply zoom to position and size
+            SDL_Rect destRect = {
+                static_cast<int>(worldPos.x),
+                static_cast<int>(worldPos.y),
+                static_cast<int>(objSize->x),
+                static_cast<int>(objSize->y)
+            };
+            
+            // Calculate rotation center (center of the object)
+            SDL_Point center = {
+                static_cast<int>(objSize->x / 2),
+                static_cast<int>(objSize->y / 2)
+            };
+            
+            // Render the object's sprite with rotation
+            SDL_RenderCopyEx(renderer, obj->getSprite(), nullptr, &destRect, 
+                            obj->getRotation(), &center, SDL_FLIP_NONE);
+            
+            }else{
+                renderObject(renderer, obj);
+            }
         }
 
         // Additional rendering logic can be added here

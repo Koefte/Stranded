@@ -111,7 +111,8 @@ enum RENDER_LAYERS {
     LAYER_BOAT = 1,
     LAYER_LIGHTHOUSE = 2,
     LAYER_PLAYER = 3,
-    LAYER_DEBUG = 4
+    LAYER_UI = 4,
+    LAYER_DEBUG = 5,
 };
 
 Player* getOrCreateRemotePlayer(uint32_t id) {
@@ -519,9 +520,15 @@ int main(int argc, char* argv[]) {
     boat = new Boat({430.0f, 280.0f}, {3.0f, 3.0f}, boatSpritePaths, 4, renderer, 0.2f, LAYER_BOAT, std::set<SDL_Keycode>{SDLK_f,SDLK_e,SDLK_b}, &navigationUIActive);
    
 
+
+
     camera = new Camera({0.0f, 0.0f}, {WIN_WIDTH, WIN_HEIGHT},2.0f);
     
     camera->follow(player);
+
+    UIGameObject* testUI = new UIGameObject({0.0f, 0.0f},{1.0f,1.0f},"./sprites/tree.bmp", renderer, LAYER_UI);
+    gameObjects.push_back(testUI);
+        
     
     gameObjects.push_back(player);
     gameObjects.push_back(boat);

@@ -39,12 +39,12 @@ public:
           renderer(renderer)
     {
         // Create rod as a child object with local position offset
-        rod = new Rod({-7.0f, 12.0f}, {2.0f, 2.0f}, "./sprites/hook.bmp", renderer, zIndex + 1);
+        rod = new Rod({-7.0f, 12.0f}, {2.0f, 2.0f}, "./sprites/Rod.bmp", renderer, zIndex + 1);
         addChild(rod);
         rod->hide();
         
-        // Create fishing hook projectile (not a child, moves independently)
-        fishingHook = new FishingHook({0.0f, 0.0f}, {1.0f, 1.0f}, "./sprites/hook.bmp", renderer, zIndex + 2);
+        // Create fishing Rod projectile (not a child, moves independently)
+        fishingHook = new FishingHook({0.0f, 0.0f}, {2.0f, 2.0f}, "./sprites/Hook.bmp", renderer, zIndex + 2);
     }
 
     // Public getter for the player's rod
