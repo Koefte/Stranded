@@ -4,6 +4,7 @@
 #include "Vector2.hpp"
 #include "GameObject.hpp"
 #include "ParticleSystem.hpp"
+#include <random>
 
 class FishingHook : public GameObject {
 private:
@@ -13,15 +14,17 @@ private:
     float gravity = 300.0f;
     bool isActive = false;
     bool destReached = false;
-    bool emittedSplash = false;
-    ParticleSystem* splashParticles = nullptr;
+    ParticleSystem* attractParticles = nullptr;
+    bool attractPending = false;
+    float attractTimer = 0.0f;
+    std::mt19937 rng{std::random_device{}()};
 
 public:
     FishingHook(Vector2 pos, Vector2 sizeMultiplier, const char* spritePath, SDL_Renderer* renderer, int zIndex = 2)
         : GameObject(pos, sizeMultiplier, spritePath, renderer, zIndex),
           velocity({0.0f, 0.0f}),
           lineOrigin({0.0f, 0.0f}),
-          splashParticles(new ParticleSystem(renderer))
+          attractParticles(new ParticleSystem(renderer))
     {
         setVisible(false);
 
@@ -53,6 +56,11 @@ public:
         }
         isActive = true;
         setVisible(true);
+        // Schedule attract particles to spawn after a random delay
+        // Make delays always longer than the previous range (0.5-2.5s)
+        std::uniform_real_distribution<float> delayDist(2.6f, 5.0f);
+        attractTimer = delayDist(rng);
+        attractPending = true;
     }
 
     void update(float dt) override {
@@ -78,27 +86,34 @@ public:
             velocity = {0.0f, 0.0f};
         }
 
-        if(destReached && !emittedSplash){
-            splashParticles->emit(
-                getWorldPosition(),
-                getWorldPosition(),
-                10,
-                SDL_Color{0, 150, 255, 255},
-                5.0f,
-                5
-            );
-            // Do not parent particles to the hook; ParticleSystem renders them independently
-            emittedSplash = true;
+        // (removed immediate arrival burst; only delayed attract particles are used)
 
+        // Handle attract particles spawn after delay
+        if (attractPending) {
+            attractTimer -= dt;
+            if (attractTimer <= 0.0f) {
+                // Spawn particles at a random distance from the hook and move them toward the hook
+                Vector2 hookPos = getWorldPosition();
+                std::uniform_real_distribution<float> radiusDist(40.0f, 140.0f);
+                std::uniform_real_distribution<float> angleDist(0.0f, 2.0f * 3.14159265f);
+                float radius = radiusDist(rng);
+                float angle = angleDist(rng);
+                Vector2 startCenter = { hookPos.x + std::cos(angle) * radius, hookPos.y + std::sin(angle) * radius };
+                // Emit particles that move from startCenter toward the current hook position
+                if (attractParticles) {
+                    // Slower, fewer, and slightly tighter-spread attract particles
+                    attractParticles->emit(startCenter, hookPos, 10, SDL_Color{0, 255, 0, 255}, 4.5f, 4, 12.0f);
+                }
+                attractPending = false;
+            }
         }
-        if(emittedSplash) splashParticles->update(dt);
+        if (attractParticles) attractParticles->update(dt);
     }
 
     void retract() {
         isActive = false;
         destReached = false;
-        emittedSplash = false;
-        splashParticles->getParticles().clear();
+        if (attractParticles) attractParticles->getParticles().clear();
         setVisible(false);
         velocity = {0.0f, 0.0f};
     }
@@ -136,8 +151,8 @@ public:
         SDL_RenderDrawLine(renderer, x1, y1, x2, y2);
     }
 
-    // Render splash particles (called from main render loop)
+    // Render particles (called from main render loop)
     void renderParticles(SDL_Renderer* renderer, const Vector2& cameraOffset, float cameraZoom) {
-        if (splashParticles) splashParticles->render(renderer, cameraOffset, cameraZoom);
+        if (attractParticles) attractParticles->render(renderer, cameraOffset, cameraZoom);
     }
 };
