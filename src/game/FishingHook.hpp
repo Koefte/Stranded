@@ -38,6 +38,11 @@ private:
     std::vector<Vector2> pendingStartPositions;
     Vector2 pendingEndPosition{0.0f,0.0f};
     float pendingDuration = 0.0f;
+    // Debug visualization for networked particle starts
+    bool attractDebugDraw = false;
+    std::vector<Vector2> debugPositions;
+    float debugDrawDuration = 3.0f;
+    float debugTimer = 0.0f;
     std::mt19937 rng{std::random_device{}()};
     int lastAttractAliveCount = 0;
     // Callback invoked when attract particles have finished arriving
@@ -65,6 +70,15 @@ public:
     // Register a callback to be invoked when attract particles finish
     void setOnAttractArrival(std::function<void()> cb) {
         onAttractArrival = cb;
+    }
+
+    // Enable or disable a visual debug overlay that shows received particle start positions
+    void setAttractDebug(bool enable) {
+        attractDebugDraw = enable;
+        if (!enable) {
+            debugPositions.clear();
+            debugTimer = 0.0f;
+        }
     }
 
     // Ensure all positions are world coordinates
@@ -136,22 +150,42 @@ public:
                     angle = angleDist(rng);
                 }
                 Vector2 startCenter;
-                if (attractUseAbsoluteStart) {
-                    startCenter = attractAbsoluteStart;
+                if (!pendingStartPositions.empty()) {
+                    // Use explicit particle start positions provided by the host (networked)
+                    if (attractParticles) {
+                        SDL_Color col = attractColor;
+                        float dur = pendingDuration > 0.0f ? pendingDuration : (attractDuration > 0.0f ? attractDuration : 4.5f);
+                        int zidx = attractZIndex > 0 ? attractZIndex : 4;
+                        attractParticles->emitFromStarts(pendingStartPositions, hookPos, dur, col, zidx);
+                        // Play attract spawn sound only if allowed for this scheduled spawn
+                        if (attractPlaySound) SoundManager::instance().playSound("attract_spawn", 0, MIX_MAX_VOLUME);
+                        lastAttractAliveCount = static_cast<int>(pendingStartPositions.size());
+                        pendingStartPositions.clear();
+                    }
                 } else {
-                    startCenter = { hookPos.x + std::cos(angle) * radius, hookPos.y + std::sin(angle) * radius };
-                }
-                // Emit particles that move from startCenter toward the current hook position
-                if (attractParticles) {
-                    int count = attractCount > 0 ? attractCount : 10;
-                    SDL_Color col = attractColor;
-                    float dur = attractDuration > 0.0f ? attractDuration : 4.5f;
-                    int zidx = attractZIndex > 0 ? attractZIndex : 4;
-                    float spr = attractSpread;
-                    attractParticles->emit(startCenter, hookPos, count, col, dur, zidx, spr);
-                    // Play attract spawn sound only if allowed for this scheduled spawn
-                    if (attractPlaySound) SoundManager::instance().playSound("attract_spawn", 0, MIX_MAX_VOLUME);
-                    lastAttractAliveCount = count;
+                    if (attractUseAbsoluteStart) {
+                        startCenter = attractAbsoluteStart;
+                    } else {
+                        startCenter = { hookPos.x + std::cos(angle) * radius, hookPos.y + std::sin(angle) * radius };
+                    }
+                    // Emit particles that move from startCenter toward the current hook position
+                    if (attractParticles) {
+                        int count = attractCount > 0 ? attractCount : 10;
+                        SDL_Color col = attractColor;
+                        float dur = attractDuration > 0.0f ? attractDuration : 4.5f;
+                        int zidx = attractZIndex > 0 ? attractZIndex : 4;
+                        float spr = attractSpread;
+                        if (hasAttractSeed) {
+                            // Deterministic emit using seed so clients reproduce same noisy starts
+                            attractParticles->emitFromSeed(attractSeed, startCenter, hookPos, count, col, dur, zidx, spr);
+                            lastAttractAliveCount = count;
+                        } else {
+                            attractParticles->emit(startCenter, hookPos, count, col, dur, zidx, spr);
+                            lastAttractAliveCount = count;
+                        }
+                        // Play attract spawn sound only if allowed for this scheduled spawn
+                        if (attractPlaySound) SoundManager::instance().playSound("attract_spawn", 0, MIX_MAX_VOLUME);
+                    }
                 }
                 attractPending = false;
                 hasAttractSeed = false;
@@ -174,6 +208,11 @@ public:
                 lastAttractAliveCount = alive;
             }
         }
+        // Debug timer for drawing received start positions
+        if (debugTimer > 0.0f) {
+            debugTimer -= dt;
+            if (debugTimer <= 0.0f) debugPositions.clear();
+        }
     }
 
     void retract() {
@@ -192,6 +231,11 @@ public:
         attractPlaySound = playSound;
         attractPending = true;
         attractTimer = delay;
+        // If debug drawing is enabled, snapshot these positions for visual verification
+        if (attractDebugDraw) {
+            debugPositions = pendingStartPositions;
+            debugTimer = debugDrawDuration;
+        }
     }
 
     // Schedule attract spawn deterministically from a seed (does not emit immediately)
@@ -260,6 +304,23 @@ public:
     // Render particles (called from main render loop)
     void renderParticles(SDL_Renderer* renderer, const Vector2& cameraOffset, float cameraZoom) {
         if (attractParticles) attractParticles->render(renderer, cameraOffset, cameraZoom);
+
+        // Draw debug markers for received start positions (if enabled)
+        if (attractDebugDraw && !debugPositions.empty()) {
+            // Semi-transparent red squares
+            SDL_BlendMode oldMode;
+            SDL_GetRenderDrawBlendMode(renderer, &oldMode);
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(renderer, 255, 0, 0, 192);
+            for (auto &p : debugPositions) {
+                int sx = static_cast<int>((p.x - cameraOffset.x) * cameraZoom);
+                int sy = static_cast<int>((p.y - cameraOffset.y) * cameraZoom);
+                int size = std::max(4, static_cast<int>(6 * cameraZoom));
+                SDL_Rect r{ sx - size/2, sy - size/2, size, size };
+                SDL_RenderFillRect(renderer, &r);
+            }
+            SDL_SetRenderDrawBlendMode(renderer, oldMode);
+        }
     }
 
     // Spawn attract particles immediately (used by networked spawn)

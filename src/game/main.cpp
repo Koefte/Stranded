@@ -340,7 +340,7 @@ void receiveInputs() {
                     Vector2 direction = { target.x - hookTip.x, target.y - hookTip.y };
                     remote->getFishingProjectile()->retract();
                     remote->getFishingProjectile()->cast(hookTip, direction, target);
-                    // Host computes exact particle start positions now, sends them and a delay so clients spawn identically
+                    // Use seed-based broadcast so clients can deterministically generate particle positions locally
                     const int count = 10;
                     const float duration = 4.5f;
                     const int zidx = LAYER_PARTICLE;
@@ -348,37 +348,32 @@ void receiveInputs() {
                     // Compute spawn delay deterministically on host
                     std::uniform_real_distribution<float> delayDist(2.6f, 5.0f);
                     float delay = delayDist(netRng);
-                    // Compute start center and then per-particle noisy starts
+                    // Compute center for noisy starts deterministically on host
                     std::uniform_real_distribution<float> radiusDist(40.0f, 140.0f);
                     std::uniform_real_distribution<float> angleDist(0.0f, 2.0f * 3.14159265f);
-                    std::uniform_real_distribution<float> noiseDist(-spread, spread);
                     float radius = radiusDist(netRng);
                     float angle = angleDist(netRng);
                     Vector2 startCenter = { hookTip.x + std::cos(angle) * radius, hookTip.y + std::sin(angle) * radius };
-                    std::vector<ParticlePos> starts;
-                    starts.reserve(count);
-                    for (int i = 0; i < count; ++i) {
-                        ParticlePos p;
-                        p.sx = startCenter.x + noiseDist(netRng);
-                        p.sy = startCenter.y + noiseDist(netRng);
-                        starts.push_back(p);
-                    }
 
-                    ParticlePositionsHeader hdr{};
-                    hdr.magic = 0x534F5050; // 'PPOS'
-                    hdr.ownerId = pkt.clientId;
-                    hdr.delay = delay;
-                    hdr.count = static_cast<uint8_t>(count);
-                    hdr.duration = duration;
-                    hdr.zIndex = zidx;
-                    hdr.destX = hookTip.x;
-                    hdr.destY = hookTip.y;
-                    hdr.r = 0; hdr.g = 255; hdr.b = 0; hdr.a = 255;
+                    // Create compact ParticlePacket that contains seed + center; clients will reproduce exact noisy starts
+                    uint32_t seed = static_cast<uint32_t>(netRng());
+                    ParticlePacket p{};
+                    p.magic = 0x54524150; // 'PART'
+                    p.ownerId = pkt.clientId;
+                    p.seed = seed;
+                    p.startX = startCenter.x;
+                    p.startY = startCenter.y;
+                    p.destX = hookTip.x;
+                    p.destY = hookTip.y;
+                    p.count = static_cast<uint8_t>(count);
+                    p.duration = duration;
+                    p.zIndex = zidx;
+                    p.spread = spread;
+                    p.r = 0; p.g = 255; p.b = 0; p.a = 255;
 
-                    size_t totalSize = sizeof(hdr) + sizeof(ParticlePos) * starts.size();
+                    size_t totalSize = sizeof(p);
                     UDPpacket* out = SDLNet_AllocPacket(static_cast<int>(totalSize));
-                    std::memcpy(out->data, &hdr, sizeof(hdr));
-                    std::memcpy(out->data + sizeof(hdr), starts.data(), sizeof(ParticlePos) * starts.size());
+                    std::memcpy(out->data, &p, sizeof(p));
                     out->len = static_cast<uint16_t>(totalSize);
                     for (auto& addr : clientAddrs) {
                         out->address = addr;
@@ -386,13 +381,10 @@ void receiveInputs() {
                     }
                     SDLNet_FreePacket(out);
 
-                    // Schedule host-side spawn using the explicit starts so host matches clients
+                    // Schedule host-side spawn using seed so host matches clients
                     if (remote->getFishingProjectile()) {
-                        std::vector<Vector2> hostStarts;
-                        hostStarts.reserve(count);
-                        for (auto &ppos : starts) hostStarts.push_back({ppos.sx, ppos.sy});
                         remote->getFishingProjectile()->cancelPendingAttract();
-                        remote->getFishingProjectile()->scheduleAttractFromPositions(hostStarts, hookTip, delay, SDL_Color{0,255,0,255}, duration, zidx, (pkt.clientId == clientId));
+                        remote->getFishingProjectile()->scheduleAttractFromSeed(seed, count, SDL_Color{0,255,0,255}, duration, zidx, spread, startCenter, true, (pkt.clientId == clientId));
                     }
                 }
             }
@@ -856,36 +848,29 @@ int main(int argc, char* argv[]) {
             // Modified to process both snapshots and chunk packets
             UDPpacket* in = SDLNet_AllocPacket(2048);
             while (SDLNet_UDP_Recv(udpSocket, in)) {
-                // Check for particle packet first
-                if (in->len >= sizeof(ParticlePositionsHeader)) {
-                    ParticlePositionsHeader hdr;
-                    std::memcpy(&hdr, in->data, sizeof(ParticlePositionsHeader));
-                    if (hdr.magic == 0x534F5050) { // 'PPOS'
-                        size_t expected = sizeof(ParticlePositionsHeader) + static_cast<size_t>(hdr.count) * sizeof(ParticlePos);
-                        if (in->len >= expected) {
-                            ParticlePos* arr = reinterpret_cast<ParticlePos*>(in->data + sizeof(ParticlePositionsHeader));
-                            Player* targetPlayer = nullptr;
-                            // If the packet owner is this client, apply to local player instead of creating a remote
-                            if (hdr.ownerId == clientId) {
-                                targetPlayer = player;
-                            } else {
-                                targetPlayer = getOrCreateRemotePlayer(hdr.ownerId);
-                            }
-                            if (targetPlayer && targetPlayer->getFishingProjectile()) {
-                                std::vector<Vector2> starts;
-                                starts.reserve(hdr.count);
-                                for (uint8_t i = 0; i < hdr.count; ++i) {
-                                    starts.push_back({arr[i].sx, arr[i].sy});
-                                }
-                                SDL_Color col{hdr.r, hdr.g, hdr.b, hdr.a};
-                                bool playSound = (hdr.ownerId == clientId);
-                                targetPlayer->getFishingProjectile()->cancelPendingAttract();
-                                targetPlayer->getFishingProjectile()->scheduleAttractFromPositions(starts, {hdr.destX, hdr.destY}, hdr.delay, col, hdr.duration, hdr.zIndex, playSound);
-                            }
+                // Check for compact particle seed packet first
+                if (in->len >= sizeof(ParticlePacket)) {
+                    ParticlePacket pp;
+                    std::memcpy(&pp, in->data, sizeof(ParticlePacket));
+                    if (pp.magic == 0x54524150) { // 'PART'
+                        Player* targetPlayer = nullptr;
+                        if (pp.ownerId == clientId) {
+                            targetPlayer = player;
+                        } else {
+                            targetPlayer = getOrCreateRemotePlayer(pp.ownerId);
+                        }
+                        if (targetPlayer && targetPlayer->getFishingProjectile()) {
+                            SDL_Color col{pp.r, pp.g, pp.b, pp.a};
+                            bool playSound = (pp.ownerId == clientId);
+                            Vector2 center{pp.startX, pp.startY};
+                            targetPlayer->getFishingProjectile()->cancelPendingAttract();
+                            // Use seed-based scheduling so clients reproduce positions locally
+                            targetPlayer->getFishingProjectile()->scheduleAttractFromSeed(pp.seed, pp.count, col, pp.duration, pp.zIndex, pp.spread, center, true, playSound);
                         }
                         continue; // processed
                     }
                 }
+
                 // Check for chunk packet first
                 if (in->len >= sizeof(ChunkPacket)) {
                     ChunkPacket cp;

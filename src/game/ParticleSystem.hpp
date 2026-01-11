@@ -27,6 +27,19 @@ public:
         }
     }
 
+    // Emit particles deterministically from a seed and center using the provided spread.
+    // This lets different machines reproduce the same per-particle noisy starts without sending each position.
+    void emitFromSeed(uint32_t seed, const Vector2& center, const Vector2& end, int count, SDL_Color color, float duration, int zIndex, float spread = 10.0f) {
+        std::mt19937 seededRng(seed);
+        std::uniform_real_distribution<float> noise(-spread, spread);
+        std::vector<Vector2> starts;
+        starts.reserve(count);
+        for (int i = 0; i < count; ++i) {
+            starts.emplace_back(Vector2{center.x + noise(seededRng), center.y + noise(seededRng)});
+        }
+        emitFromStarts(starts, end, duration, color, zIndex);
+    }
+
     void update(float dt) {
         for (auto& p : particles) {
             p.update(dt);
