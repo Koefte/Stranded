@@ -251,7 +251,10 @@ public:
                     SoundManager::instance().playSound("attract_arrival", 0, MIX_MAX_VOLUME);
                 }
                 // Invoke optional arrival callback
-                if (onAttractArrival) onAttractArrival();
+                if (onAttractArrival) {
+                    SDL_Log("FishingHook %p invoking onAttractArrival callback", this);
+                    onAttractArrival();
+                }
                 lastAttractAliveCount = 0;
                 // Reset suppression after handling arrival
                 suppressArrivalSoundUntilNextSpawn = false;

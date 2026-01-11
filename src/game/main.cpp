@@ -34,6 +34,32 @@ static bool navigationUIActive = false;
 static SDL_Texture* navigationClockTexture = nullptr;
 static SDL_Texture* navigationIndicatorTexture = nullptr;
 
+// Fishing minigame state (timed click to catch a fish)
+static bool fishingMinigameActive = false;
+static float fishingMinigameTimer = 0.0f;
+static float fishingMinigameDuration = 4.5f; // seconds until failure (eased)
+static float fishingMinigameIndicator = 0.0f; // 0..1 moving indicator
+static float fishingMinigameIndicatorDir = 1.0f; // direction +1/-1
+static float fishingMinigameIndicatorSpeed = 0.8f; // cycles per second across 0..1 (slowed for ease)
+// Default window roughly 20% centered; actual window recalculated on start
+static float fishingMinigameWindowStart = 0.40f;
+static float fishingMinigameWindowEnd = 0.60f;
+static Vector2 fishingMinigameHookPos{0.0f,0.0f}; // world pos where minigame triggered
+static SDL_Rect fishingMinigameScreenRect = {0,0,0,0}; // screen-space rect for minigame bar
+static std::mt19937 fishingMinigameRng(std::random_device{}());
+static int fishingMinigameAttempts = 0; // debug counter
+
+// Fish collection / inventory state
+static std::vector<GameObject*> fishesMovingToPlayer; // world fish moving towards player
+// Inventory as a fixed 2D grid of UIFish icons (screen-space UIGameObjects)
+static const int INV_COLS = 5;
+static const int INV_ROWS = 3;
+static const int INV_CELL_SIZE = 64;
+static const int INV_PADDING = 12;
+static std::vector<UIGameObject*> inventorySlots(INV_COLS * INV_ROWS, nullptr); // null = empty slot
+
+
+
 static std::set<SDL_Keycode> pressedInteractKeys;
 // Inventory UI state
 static bool inventoryOpen = false;
@@ -181,6 +207,9 @@ enum RENDER_LAYERS {
 // Forward declare so getOrCreateRemotePlayer can reference it when installing callbacks
 void hostBroadcastHookArrival(uint32_t ownerId, const Vector2& pos);
 
+// Spawn a fish GameObject at the given world position
+void onHook(const Vector2& pos);
+
 Player* getOrCreateRemotePlayer(uint32_t id) {
     if (remotePlayers.find(id) != remotePlayers.end()) {
         return remotePlayers[id];
@@ -206,6 +235,11 @@ Player* getOrCreateRemotePlayer(uint32_t id) {
                 hostBroadcastHookArrival(id, pos);
             });
         }
+        // Spawn fish when attract arrival occurs for this remote player's hook
+        remote->getFishingProjectile()->setOnAttractArrival([remote](){
+            Vector2 p = remote->getFishingProjectile()->getWorldPosition();
+            onHook(p);
+        });
     }
     std::cout << "Created remote player with ID: " << id << "\n";
     return remote;
@@ -252,6 +286,13 @@ void sendInputPacket() {
     uint8_t sendMouseDown = 0;
     if (mouseDown && !lastMouseDown) {
         sendMouseDown = 1;
+    }
+    // If a local fishing minigame is active, suppress sending mouseDown to prevent server-side casts
+    if (fishingMinigameActive) {
+        if (sendMouseDown) {
+            SDL_Log("Client: suppressing sendMouseDown due to active fishing minigame");
+        }
+        sendMouseDown = 0;
     }
     lastMouseDown = mouseDown;
     lastMouseX = mouseX;
@@ -498,6 +539,50 @@ void hostBroadcastHookArrival(uint32_t ownerId, const Vector2& pos) {
     SDL_Log("Host broadcast hook arrival for owner=%u at (%.2f,%.2f)", ownerId, pos.x, pos.y);
 }
 
+// Spawn a simple fish GameObject at the given world position or start a local minigame if this is our hook
+void onHook(const Vector2& pos) {
+    if (!g_renderer) return;
+    // If this arrival corresponds to our local player's active hook, start the timed-click minigame instead
+    if (player && player->getFishingProjectile() && player->getFishingProjectile()->getIsActive()) {
+        Vector2 hookPos = player->getFishingProjectile()->getWorldPosition();
+        float dx = hookPos.x - pos.x;
+        float dy = hookPos.y - pos.y;
+        float dist2 = dx*dx + dy*dy;
+        if (dist2 < 4.0f * 4.0f) { // close enough to be our hook
+            // Initialize minigame parameters
+            fishingMinigameActive = true;
+            fishingMinigameTimer = 0.0f;
+            fishingMinigameDuration = 4.5f; // eased timeout
+            fishingMinigameIndicator = 0.0f;
+            fishingMinigameIndicatorDir = 1.0f;
+            std::uniform_real_distribution<float> centerDist(0.25f, 0.75f);
+            float center = centerDist(fishingMinigameRng);
+            float width = 0.20f; // 20% target window (easier)
+            fishingMinigameWindowStart = std::max(0.0f, center - width/2.0f);
+            fishingMinigameWindowEnd = std::min(1.0f, center + width/2.0f);
+            fishingMinigameHookPos = pos;
+            // Compute initial screen rect immediately so clicks during the same frame register
+            if (camera) {
+                Vector2 hookWorld = fishingMinigameHookPos;
+                Vector2 camPos = camera->getPosition();
+                float zoom = camera->getZoom();
+                const int barW = 200;
+                const int barH = 20;
+                int sx = static_cast<int>((hookWorld.x - camPos.x) * zoom) - barW/2;
+                int sy = static_cast<int>((hookWorld.y - camPos.y) * zoom) - 48; // above hook
+                sx = std::max(8, std::min(sx, WIN_WIDTH - barW - 8));
+                sy = std::max(8, std::min(sy, WIN_HEIGHT - barH - 8));
+                fishingMinigameScreenRect = { sx, sy, barW, barH };
+            }
+            SDL_Log("Fishing minigame started: window=(%.3f-%.3f) screenrect=(%d,%d,%d,%d)", fishingMinigameWindowStart, fishingMinigameWindowEnd, fishingMinigameScreenRect.x, fishingMinigameScreenRect.y, fishingMinigameScreenRect.w, fishingMinigameScreenRect.h);
+            // Do not spawn a free fish; wait for minigame result
+            return;
+        }
+    }
+
+    // Otherwise spawn a free fish in the world (remote player or missed minigame)
+    
+} 
 
 
 // Helper function to check collision between two collision shapes (handles single and multi-rectangle)
@@ -652,6 +737,9 @@ int main(int argc, char* argv[]) {
         SoundManager::instance().loadSound("cast", "./sounds/cast.wav");
         SoundManager::instance().loadSound("attract_spawn", "./sounds/attract_spawn.wav");
         SoundManager::instance().loadSound("attract_arrival", "./sounds/attract_arrival.wav");
+        // Minigame sounds
+        SoundManager::instance().loadSound("catch", "./sounds/catch.wav");
+        SoundManager::instance().loadSound("escape", "./sounds/escape.wav");
     }
 
     SDL_Window* window = SDL_CreateWindow(
@@ -724,6 +812,14 @@ int main(int argc, char* argv[]) {
     if (isHost && player->getFishingProjectile()) {
         player->getFishingProjectile()->setOnHookArrival([](const Vector2& pos){
             hostBroadcastHookArrival(clientId, pos);
+        });
+    }
+    // Spawn fish when attract arrival occurs for local player's hook (always)
+    if (player->getFishingProjectile()) {
+        player->getFishingProjectile()->setOnAttractArrival([&](){
+            Vector2 p = player->getFishingProjectile()->getWorldPosition();
+            SDL_Log("Local player attract arrival - spawning fish at (%.2f,%.2f)", p.x, p.y);
+            onHook(p);
         });
     }
 
@@ -842,6 +938,45 @@ int main(int argc, char* argv[]) {
         double dt = (now - prev) / freq; // seconds since last frame
         prev = now;
 
+        // Update fishing minigame state (indicator movement and timeout) EARLY so input sees the visible indicator
+        if (fishingMinigameActive) {
+            if (!navigationUIActive && !inventoryOpen) {
+                fishingMinigameTimer += static_cast<float>(dt);
+                // Move indicator across 0..1, bounce at edges
+                fishingMinigameIndicator += fishingMinigameIndicatorDir * fishingMinigameIndicatorSpeed * static_cast<float>(dt);
+                if (fishingMinigameIndicator > 1.0f) {
+                    fishingMinigameIndicator = 1.0f;
+                    fishingMinigameIndicatorDir = -fishingMinigameIndicatorDir;
+                } else if (fishingMinigameIndicator < 0.0f) {
+                    fishingMinigameIndicator = 0.0f;
+                    fishingMinigameIndicatorDir = -fishingMinigameIndicatorDir;
+                }
+
+                // Compute screen-space rectangle for the minigame bar near the hook position
+                if (camera) {
+                    Vector2 hookWorld = fishingMinigameHookPos;
+                    Vector2 camPos = camera->getPosition();
+                    float zoom = camera->getZoom();
+                    const int barW = 200;
+                    const int barH = 20;
+                    int sx = static_cast<int>((hookWorld.x - camPos.x) * zoom) - barW/2;
+                    int sy = static_cast<int>((hookWorld.y - camPos.y) * zoom) - 48; // above hook
+                    // Clamp to window bounds
+                    sx = std::max(8, std::min(sx, WIN_WIDTH - barW - 8));
+                    sy = std::max(8, std::min(sy, WIN_HEIGHT - barH - 8));
+                    fishingMinigameScreenRect = { sx, sy, barW, barH };
+                }
+
+                // Timeout: failure if not clicked within duration
+                if (fishingMinigameTimer >= fishingMinigameDuration) {
+                    SDL_Log("Fishing minigame: timeout (failed)");
+                    SoundManager::instance().playSound("escape", 0, MIX_MAX_VOLUME);
+                    if (player && player->getFishingProjectile()) player->getFishingProjectile()->retract();
+                    fishingMinigameActive = false;
+                }
+            }
+        }
+
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
                 running = false;
@@ -849,6 +984,60 @@ int main(int argc, char* argv[]) {
                 running = false;
             }
             else if (event.type == SDL_MOUSEBUTTONDOWN) {
+                // If a fishing minigame is active, intercept left-clicks to resolve it and suppress casting
+                if (fishingMinigameActive && event.button.button == SDL_BUTTON_LEFT) {
+                    // Recompute screen rect at click time to match what is drawn (camera may have moved since last frame)
+                    if (camera) {
+                        Vector2 hookWorld = fishingMinigameHookPos;
+                        Vector2 camPos = camera->getPosition();
+                        float zoom = camera->getZoom();
+                        const int barW = 200;
+                        const int barH = 20;
+                        int sx = static_cast<int>((hookWorld.x - camPos.x) * zoom) - barW/2;
+                        int sy = static_cast<int>((hookWorld.y - camPos.y) * zoom) - 48; // above hook
+                        sx = std::max(8, std::min(sx, WIN_WIDTH - barW - 8));
+                        sy = std::max(8, std::min(sy, WIN_HEIGHT - barH - 8));
+                        fishingMinigameScreenRect = { sx, sy, barW, barH };
+                    }
+
+                    int mx = event.button.x;
+                    int my = event.button.y;
+                    // Compute the same pixel positions used for rendering and evaluate success in pixel-space to avoid rounding/timing mismatches
+                    SDL_Rect barBg = fishingMinigameScreenRect;
+                    int winX = static_cast<int>(barBg.x + fishingMinigameWindowStart * barBg.w);
+                    int winW = static_cast<int>((fishingMinigameWindowEnd - fishingMinigameWindowStart) * barBg.w);
+                    SDL_Rect winRect = { winX, barBg.y, winW, barBg.h };
+                    int indX = static_cast<int>(barBg.x + fishingMinigameIndicator * barBg.w);
+
+                    bool inside = (mx >= barBg.x && mx <= barBg.x + barBg.w && my >= barBg.y && my <= barBg.y + barBg.h);
+
+                    bool success = false;
+                    
+                    if(fishingMinigameWindowStart <= fishingMinigameIndicator && fishingMinigameIndicator <= fishingMinigameWindowEnd){
+                        success = true;
+                    }
+                    fishingMinigameAttempts++;
+                    if (success) {
+                        SDL_Log("Fishing minigame: Success! indicator=%.3f window=(%.3f-%.3f)", fishingMinigameIndicator, fishingMinigameWindowStart, fishingMinigameWindowEnd);
+                        // Play success sound
+                        SoundManager::instance().playSound("catch", 0, MIX_MAX_VOLUME);
+                        // Spawn a caught fish (visual) at the hook position and start moving it toward the player
+                        if (g_renderer) {
+                            GameObject* caught = new GameObject(fishingMinigameHookPos, {2.0f,2.0f}, "./sprites/fish.bmp", g_renderer, LAYER_PARTICLE);
+                            gameObjects.push_back(caught);
+                            fishesMovingToPlayer.push_back(caught); // mark for collection movement
+                            SDL_Log("Caught fish spawned at (%.2f,%.2f) and marked for collection", fishingMinigameHookPos.x, fishingMinigameHookPos.y);
+                        }
+                    } else {
+                        SDL_Log("Fishing minigame: Fail. indicator=%.3f window=(%.3f-%.3f)", fishingMinigameIndicator, fishingMinigameWindowStart, fishingMinigameWindowEnd);
+                        SoundManager::instance().playSound("escape", 0, MIX_MAX_VOLUME);
+                    }
+                    // Retract local hook and end minigame
+                    if (player && player->getFishingProjectile()) player->getFishingProjectile()->retract();
+                    fishingMinigameActive = false;
+                    continue; // consume click and suppress normal casting
+                }
+
                 // Handle mouse click for fishing hook casting
                 if (!navigationUIActive) {
                     player->onMouseDown(event.button.button, event.button.x, event.button.y, 
@@ -1209,7 +1398,68 @@ int main(int argc, char* argv[]) {
             }
         }
         
+        // (moved) fishing minigame update runs earlier now to ensure input sees the visible indicator
 
+        // Move any caught fishes toward the player's world position and spawn UI icons when they reach the player
+        if (!fishesMovingToPlayer.empty() && player) {
+            std::vector<GameObject*> remaining;
+            for (auto* fish : fishesMovingToPlayer) {
+                if (!fish) continue;
+                Vector2* fpos = fish->getPosition();
+                Vector2 playerPos = player->getWorldPosition();
+                float dx = playerPos.x - fpos->x;
+                float dy = playerPos.y - fpos->y;
+                float dist = std::sqrt(dx*dx + dy*dy);
+                float moveSpeed = 160.0f; // pixels per second
+                float step = moveSpeed * static_cast<float>(dt);
+                if (dist <= step + 1.0f) {
+                    // Collected: remove fish from world and add to first empty inventory slot
+                    auto it = std::find(gameObjects.begin(), gameObjects.end(), fish);
+                    if (it != gameObjects.end()) gameObjects.erase(it);
+                    // Find first empty slot
+                    int slotIndex = -1;
+                    for (int si = 0; si < INV_COLS * INV_ROWS; ++si) {
+                        if (!inventorySlots[si]) { slotIndex = si; break; }
+                    }
+                    if (slotIndex >= 0 && renderer) {
+                        int cols = INV_COLS; int rows = INV_ROWS; int cellSize = INV_CELL_SIZE; int padding = INV_PADDING;
+                        int gridWidth = cols * cellSize + (cols - 1) * padding;
+                        int gridHeight = rows * cellSize + (rows - 1) * padding;
+                        int startX = (WIN_WIDTH - gridWidth) / 2;
+                        int startY = (WIN_HEIGHT - gridHeight) / 2;
+                        int srow = slotIndex / cols;
+                        int scol = slotIndex % cols;
+                        SDL_Rect dstRect = { startX + scol * (cellSize + padding), startY + srow * (cellSize + padding), cellSize, cellSize };
+                        // Create a static UI icon in that slot (start hidden; shown only when inventoryOpen)
+                        // Do NOT add to gameObjects - we'll render icons only while inventory is open
+                        UIGameObject* icon = new UIGameObject({static_cast<float>(dstRect.x), static_cast<float>(dstRect.y)}, {1.0f,1.0f}, "./sprites/fish.bmp", renderer, LAYER_UI);
+                        icon->getSize()->x = static_cast<float>(cellSize);
+                        icon->getSize()->y = static_cast<float>(cellSize);
+                        icon->setVisible(false); // hide until inventory is opened
+                        inventorySlots[slotIndex] = icon;
+                        SDL_Log("Fish added to inventory slot %d", slotIndex);
+                        delete fish;
+                    } else {
+                        // Inventory full: just delete the fish
+                        delete fish;
+                        SDL_Log("Inventory full, fish discarded");
+                    }
+                } else {
+                    // Move toward player
+                    fpos->x += (dx / dist) * step;
+                    fpos->y += (dy / dist) * step;
+                    remaining.push_back(fish);
+                }
+            }
+            fishesMovingToPlayer = std::move(remaining);
+        }
+
+
+
+        // Ensure inventory icons are only visible when the inventory UI is open
+        for (int si = 0; si < INV_COLS * INV_ROWS; ++si) {
+            if (inventorySlots[si]) inventorySlots[si]->setVisible(inventoryOpen);
+        }
         camera->render(renderer,gameObjects);
 
 
@@ -1265,6 +1515,31 @@ int main(int argc, char* argv[]) {
                     // Draw the inventory sprite
                     if (invTex) {
                         SDL_RenderCopy(renderer, invTex, nullptr, &dstRect);
+                    }
+                    // If a slot is occupied, draw the fish icon explicitly (only when inventory UI is visible)
+                    int slotIndex = row * cols + col;
+                    if (slotIndex >= 0 && slotIndex < INV_COLS * INV_ROWS && inventorySlots[slotIndex]) {
+                        // Load fish texture once
+                        static SDL_Texture* invFishTex = nullptr;
+                        if (!invFishTex) {
+                            SDL_Surface* fishSurf = SDL_LoadBMP("./sprites/fish.bmp");
+                            if (fishSurf) {
+                                invFishTex = SDL_CreateTextureFromSurface(renderer, fishSurf);
+                                SDL_FreeSurface(fishSurf);
+                            }
+                        }
+                        if (invFishTex) {
+                            SDL_RenderCopy(renderer, invFishTex, nullptr, &dstRect);
+                        }
+                        // Keep internal icon position/size in sync in case other code reads it
+                        UIGameObject* icon = inventorySlots[slotIndex];
+                        icon->setVisible(inventoryOpen);
+                        Vector2* ipos = icon->getPosition();
+                        ipos->x = static_cast<float>(dstRect.x);
+                        ipos->y = static_cast<float>(dstRect.y);
+                        Vector2* isz = icon->getSize();
+                        isz->x = static_cast<float>(dstRect.w);
+                        isz->y = static_cast<float>(dstRect.h);
                     }
                 }
             }
@@ -1330,6 +1605,37 @@ int main(int argc, char* argv[]) {
                     SDL_RenderCopy(renderer, navigationIndicatorTexture, nullptr, &indicatorRect);
                 }
             }
+        }
+
+        // Draw fishing minigame overlay if active (draw near the hook)
+        if (fishingMinigameActive) {
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+            // Dim small area behind the bar for legibility
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 120);
+            SDL_RenderFillRect(renderer, &fishingMinigameScreenRect);
+
+            // Bar background
+            SDL_Rect barBg = fishingMinigameScreenRect;
+            SDL_SetRenderDrawColor(renderer, 40, 40, 40, 220);
+            SDL_RenderFillRect(renderer, &barBg);
+
+            // Draw success window relative to the bar
+            int winX = static_cast<int>(barBg.x + fishingMinigameWindowStart * barBg.w);
+            int winW = static_cast<int>((fishingMinigameWindowEnd - fishingMinigameWindowStart) * barBg.w);
+            SDL_Rect winRect = { winX, barBg.y, winW, barBg.h };
+            SDL_SetRenderDrawColor(renderer, 0, 200, 0, 200);
+            SDL_RenderFillRect(renderer, &winRect);
+
+            // Draw indicator
+            int indX = static_cast<int>(barBg.x + fishingMinigameIndicator * barBg.w);
+            SDL_Rect indRect = { indX - 3, barBg.y - 6, 6, barBg.h + 12 };
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 220);
+            SDL_RenderFillRect(renderer, &indRect);
+
+            // Small instruction placeholder under the bar
+            SDL_Rect txt = { barBg.x, barBg.y + barBg.h + 6, barBg.w, 18 };
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 64);
+            SDL_RenderFillRect(renderer, &txt);
         }
 
         // Present the final frame once
