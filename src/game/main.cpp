@@ -19,7 +19,7 @@
 #include "DebugObject.hpp"
 #include "UIGameObject.hpp"
 #include "Particle.hpp"
-
+#include "../audio/SoundManager.hpp"
 
 //GAME
 static std::vector<GameObject*> gameObjects;
@@ -448,6 +448,17 @@ int main(int argc, char* argv[]) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
         std::cerr << "SDL_Init failed: " << SDL_GetError() << "\n";
         return 1;
+    }
+
+    // Initialize audio subsystem (SDL_mixer)
+    if (!SoundManager::instance().init()) {
+        std::cerr << "Warning: audio initialization failed, continuing without sound.\n";
+    } else {
+        // Load placeholder sounds (replace paths with actual assets)
+        SoundManager::instance().loadSound("walk", "./sounds/walk_loop.wav");
+        SoundManager::instance().loadSound("cast", "./sounds/cast.wav");
+        SoundManager::instance().loadSound("attract_spawn", "./sounds/attract_spawn.wav");
+        SoundManager::instance().loadSound("attract_arrival", "./sounds/attract_arrival.wav");
     }
 
     SDL_Window* window = SDL_CreateWindow(
@@ -1090,6 +1101,9 @@ int main(int argc, char* argv[]) {
         SDL_DestroyTexture(navigationIndicatorTexture);
     }
     
+    // Shutdown audio
+    SoundManager::instance().quit();
+
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();

@@ -20,6 +20,7 @@ private:
     SDL_Renderer* renderer;
     Rod* rod = nullptr;
     FishingHook* fishingHook = nullptr;
+    bool walkingSoundPlaying = false;
 
 public:
    
@@ -146,6 +147,8 @@ public:
             };
             // Cast the fishing hook from the rod tip position, and stop at mouse
             fishingHook->cast(rodTip, direction, worldMousePos);
+            // Play cast sound
+            SoundManager::instance().playSound("cast", 0, MIX_MAX_VOLUME);
         }
     }
 
@@ -194,10 +197,20 @@ public:
             pos->x += dx * dt;
             pos->y += dy * dt;
             startAnimation();
+            // Start walking sound if not already playing
+            if (!walkingSoundPlaying) {
+                SoundManager::instance().playSound("walk", -1, MIX_MAX_VOLUME / 2);
+                walkingSoundPlaying = true;
+            }
         } else {
             velocity.x = 0.0f;
             velocity.y = 0.0f;
             stopAnimation();
+            // Stop walking sound when movement stops
+            if (walkingSoundPlaying) {
+                SoundManager::instance().stopSound("walk");
+                walkingSoundPlaying = false;
+            }
         }
     }
 

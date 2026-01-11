@@ -14,6 +14,7 @@ endif()
 find_package(SDL2 CONFIG REQUIRED)
 find_package(SDL2_net CONFIG REQUIRED)
 find_package(SDL2_image CONFIG REQUIRED)
+find_package(SDL2_mixer CONFIG REQUIRED)
 
 # Sources
 file(GLOB_RECURSE SOURCES "src/**/*.cpp")
@@ -26,6 +27,7 @@ target_link_libraries(Stranded PRIVATE
     SDL2::SDL2main
     SDL2_net::SDL2_net
     SDL2_image::SDL2_image
+    SDL2_mixer::SDL2_mixer
 )
 
 # Copy assets to build output

@@ -10,4 +10,6 @@ CMakeCache.txt
 *.dll
 /build-msvc
 /build-vs2026
+/build--build-only
+/build--runonly
 /vcpkg_installed/

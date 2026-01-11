@@ -5,6 +5,7 @@
 #include "GameObject.hpp"
 #include "ParticleSystem.hpp"
 #include <random>
+#include "../audio/SoundManager.hpp"
 
 class FishingHook : public GameObject {
 private:
@@ -18,6 +19,7 @@ private:
     bool attractPending = false;
     float attractTimer = 0.0f;
     std::mt19937 rng{std::random_device{}()};
+    int lastAttractAliveCount = 0;
 
 public:
     FishingHook(Vector2 pos, Vector2 sizeMultiplier, const char* spritePath, SDL_Renderer* renderer, int zIndex = 2)
@@ -103,11 +105,28 @@ public:
                 if (attractParticles) {
                     // Slower, fewer, and slightly tighter-spread attract particles
                     attractParticles->emit(startCenter, hookPos, 10, SDL_Color{0, 255, 0, 255}, 4.5f, 4, 12.0f);
+                    // Play attract spawn sound
+                    SoundManager::instance().playSound("attract_spawn", 0, MIX_MAX_VOLUME);
+                    lastAttractAliveCount = 10;
                 }
                 attractPending = false;
             }
         }
-        if (attractParticles) attractParticles->update(dt);
+        if (attractParticles) {
+            attractParticles->update(dt);
+            // Check for arrival: previously had alive particles, now none alive
+            int alive = 0;
+            for (auto& p : attractParticles->getParticles()) {
+                if (p.alive) ++alive;
+            }
+            if (lastAttractAliveCount > 0 && alive == 0) {
+                // Play arrival sound once
+                SoundManager::instance().playSound("attract_arrival", 0, MIX_MAX_VOLUME);
+                lastAttractAliveCount = 0;
+            } else {
+                lastAttractAliveCount = alive;
+            }
+        }
     }
 
     void retract() {
