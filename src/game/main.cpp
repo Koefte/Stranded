@@ -72,6 +72,7 @@ struct ParticlePacket {
     float startY;
     float destX;
     float destY;
+    float delay; // seconds until spawn (host-determined)
     uint8_t count;
     float duration;
     int32_t zIndex;
@@ -80,6 +81,15 @@ struct ParticlePacket {
     uint8_t g;
     uint8_t b;
     uint8_t a;
+};
+#pragma pack(pop)
+
+#pragma pack(push, 1)
+struct HookArrivalPacket {
+    uint32_t magic; // 'HKAR'
+    uint32_t ownerId;
+    float x;
+    float y;
 };
 #pragma pack(pop)
 
@@ -168,6 +178,9 @@ enum RENDER_LAYERS {
     LAYER_DEBUG = 6,
 };
 
+// Forward declare so getOrCreateRemotePlayer can reference it when installing callbacks
+void hostBroadcastHookArrival(uint32_t ownerId, const Vector2& pos);
+
 Player* getOrCreateRemotePlayer(uint32_t id) {
     if (remotePlayers.find(id) != remotePlayers.end()) {
         return remotePlayers[id];
@@ -187,6 +200,12 @@ Player* getOrCreateRemotePlayer(uint32_t id) {
     gameObjects.push_back(remote); // Add player
     if (remote->getFishingProjectile()) {
         gameObjects.push_back(remote->getFishingProjectile()); // Add their fishing hook for rendering
+        // If running as host, set up hook arrival broadcast for this remote player
+        if (isHost) {
+            remote->getFishingProjectile()->setOnHookArrival([id](const Vector2& pos){
+                hostBroadcastHookArrival(id, pos);
+            });
+        }
     }
     std::cout << "Created remote player with ID: " << id << "\n";
     return remote;
@@ -194,6 +213,9 @@ Player* getOrCreateRemotePlayer(uint32_t id) {
 
 // Forward declarations
 float hitBoxDistance(std::vector<Rectangle> shapeA, std::vector<Rectangle> shapeB);
+
+// Host broadcast for authoritative hook arrivals
+void hostBroadcastHookArrival(uint32_t ownerId, const Vector2& pos);
 
 void sendInputPacket() {
     if (!udpSocket || isHost) return;
@@ -338,7 +360,7 @@ void receiveInputs() {
                     printf("Host: received hook target (X: %d, Y: %d)\n", pkt.hookTargetX, pkt.hookTargetY);
                     Vector2 target = { static_cast<float>(pkt.hookTargetX), static_cast<float>(pkt.hookTargetY) };
                     Vector2 direction = { target.x - hookTip.x, target.y - hookTip.y };
-                    remote->getFishingProjectile()->retract();
+                    remote->getFishingProjectile()->retract(false);
                     remote->getFishingProjectile()->cast(hookTip, direction, target);
                     // Use seed-based broadcast so clients can deterministically generate particle positions locally
                     const int count = 10;
@@ -365,6 +387,7 @@ void receiveInputs() {
                     p.startY = startCenter.y;
                     p.destX = hookTip.x;
                     p.destY = hookTip.y;
+                    p.delay = delay;
                     p.count = static_cast<uint8_t>(count);
                     p.duration = duration;
                     p.zIndex = zidx;
@@ -384,13 +407,95 @@ void receiveInputs() {
                     // Schedule host-side spawn using seed so host matches clients
                     if (remote->getFishingProjectile()) {
                         remote->getFishingProjectile()->cancelPendingAttract();
-                        remote->getFishingProjectile()->scheduleAttractFromSeed(seed, count, SDL_Color{0,255,0,255}, duration, zidx, spread, startCenter, true, (pkt.clientId == clientId));
+                        remote->getFishingProjectile()->scheduleAttractFromSeed(seed, count, SDL_Color{0,255,0,255}, duration, zidx, spread, startCenter, true, (pkt.clientId == clientId), delay);
+                    }
+
+                    // If this owner is the host itself (ownerId == clientId), also schedule on local player representation
+                    if (pkt.clientId == clientId) {
+                        if (player && player->getFishingProjectile()) {
+                            player->getFishingProjectile()->cancelPendingAttract();
+                            player->getFishingProjectile()->scheduleAttractFromSeed(seed, count, SDL_Color{0,255,0,255}, duration, zidx, spread, startCenter, true, true, delay);
+                        }
                     }
                 }
             }
         }
     }
     SDLNet_FreePacket(in);
+}
+
+// Broadcast a compact particle seed packet for a host-initiated cast
+void hostBroadcastParticleForHook(const Vector2& hookTip) {
+    if (!udpSocket || !isHost || clientAddrs.empty()) return;
+
+    const int count = 10;
+    const float duration = 4.5f;
+    const int zidx = LAYER_PARTICLE;
+    const float spread = 12.0f;
+    std::uniform_real_distribution<float> delayDist(2.6f, 5.0f);
+    float delay = delayDist(netRng);
+    std::uniform_real_distribution<float> radiusDist(40.0f, 140.0f);
+    std::uniform_real_distribution<float> angleDist(0.0f, 2.0f * 3.14159265f);
+    float radius = radiusDist(netRng);
+    float angle = angleDist(netRng);
+    Vector2 startCenter = { hookTip.x + std::cos(angle) * radius, hookTip.y + std::sin(angle) * radius };
+
+    uint32_t seed = static_cast<uint32_t>(netRng());
+    ParticlePacket p{};
+    p.magic = 0x54524150; // 'PART'
+    p.ownerId = clientId; // host's ID
+    p.seed = seed;
+    p.startX = startCenter.x;
+    p.startY = startCenter.y;
+    p.destX = hookTip.x;
+    p.destY = hookTip.y;
+    p.delay = delay;
+    p.count = static_cast<uint8_t>(count);
+    p.duration = duration;
+    p.zIndex = zidx;
+    p.spread = spread;
+    p.r = 0; p.g = 255; p.b = 0; p.a = 255;
+
+    size_t totalSize = sizeof(p);
+    UDPpacket* out = SDLNet_AllocPacket(static_cast<int>(totalSize));
+    if (!out) return;
+    std::memcpy(out->data, &p, sizeof(p));
+    out->len = static_cast<uint16_t>(totalSize);
+    for (auto& addr : clientAddrs) {
+        out->address = addr;
+        SDLNet_UDP_Send(udpSocket, -1, out);
+    }
+    SDLNet_FreePacket(out);
+
+    // Schedule host-side spawn on local player so host sees the same behavior
+    if (player && player->getFishingProjectile()) {
+        player->getFishingProjectile()->cancelPendingAttract();
+        player->getFishingProjectile()->scheduleAttractFromSeed(seed, count, SDL_Color{0,255,0,255}, duration, zidx, spread, startCenter, true, true, delay);
+    }
+}
+
+// Broadcast authoritative hook arrival to clients
+void hostBroadcastHookArrival(uint32_t ownerId, const Vector2& pos) {
+    if (!udpSocket || !isHost || clientAddrs.empty()) return;
+
+    HookArrivalPacket hp{};
+    hp.magic = 0x52414B48; // 'HKAR'
+    hp.ownerId = ownerId;
+    hp.x = pos.x;
+    hp.y = pos.y;
+
+    size_t totalSize = sizeof(hp);
+    UDPpacket* out = SDLNet_AllocPacket(static_cast<int>(totalSize));
+    if (!out) return;
+    std::memcpy(out->data, &hp, sizeof(hp));
+    out->len = static_cast<uint16_t>(totalSize);
+    for (auto& addr : clientAddrs) {
+        out->address = addr;
+        SDLNet_UDP_Send(udpSocket, -1, out);
+    }
+    SDLNet_FreePacket(out);
+
+    SDL_Log("Host broadcast hook arrival for owner=%u at (%.2f,%.2f)", ownerId, pos.x, pos.y);
 }
 
 
@@ -615,6 +720,12 @@ int main(int argc, char* argv[]) {
     };
 
     player = new Player({0.0f, 0.0f},{2.0f,2.0f}, playerSpritePaths,4, renderer,0.1f,LAYER_PLAYER);
+    // If running as host, broadcast hook arrival when our local hook arrives
+    if (isHost && player->getFishingProjectile()) {
+        player->getFishingProjectile()->setOnHookArrival([](const Vector2& pos){
+            hostBroadcastHookArrival(clientId, pos);
+        });
+    }
 
     const char* boatSpritePaths[] = {
         "./sprites/Boat1.bmp",
@@ -865,7 +976,27 @@ int main(int argc, char* argv[]) {
                             Vector2 center{pp.startX, pp.startY};
                             targetPlayer->getFishingProjectile()->cancelPendingAttract();
                             // Use seed-based scheduling so clients reproduce positions locally
-                            targetPlayer->getFishingProjectile()->scheduleAttractFromSeed(pp.seed, pp.count, col, pp.duration, pp.zIndex, pp.spread, center, true, playSound);
+                            targetPlayer->getFishingProjectile()->scheduleAttractFromSeed(pp.seed, pp.count, col, pp.duration, pp.zIndex, pp.spread, center, true, playSound, pp.delay);
+                        }
+                        continue; // processed
+                    }
+                }
+
+                // Check for hook arrival packet
+                if (in->len >= sizeof(HookArrivalPacket)) {
+                    HookArrivalPacket hp;
+                    std::memcpy(&hp, in->data, sizeof(HookArrivalPacket));
+                    if (hp.magic == 0x52414B48) { // 'HKAR'
+                        Player* targetPlayer = nullptr;
+                        if (hp.ownerId == clientId) {
+                            targetPlayer = player;
+                        } else {
+                            targetPlayer = getOrCreateRemotePlayer(hp.ownerId);
+                        }
+                        if (targetPlayer && targetPlayer->getFishingProjectile()) {
+                            Vector2 pos{hp.x, hp.y};
+                            // Authoritative set: apply arrived position immediately
+                            targetPlayer->getFishingProjectile()->setArrivedAt(pos);
                         }
                         continue; // processed
                     }
@@ -988,6 +1119,8 @@ int main(int argc, char* argv[]) {
                                             // When reproducing remote casts from snapshots, do not play attract sounds on this client
                                             remote->getFishingProjectile()->cast(hookPos, direction, hookTarget, 200.0f, false);
                                         }
+                                        // Snapshot indicates active -> cancel any pending retract
+                                        remote->getFishingProjectile()->cancelPendingRetract();
                                         // Always update position and ensure visible if active
                                         Vector2* pos = remote->getFishingProjectile()->getPosition();
                                         pos->x = hookPos.x;
@@ -995,7 +1128,8 @@ int main(int argc, char* argv[]) {
                                         remote->getFishingProjectile()->setVisible(true);
                                     } else {
                                         if (remote->getFishingProjectile()->getIsActive()) {
-                                            remote->getFishingProjectile()->retract();
+                                            // Start a short debounce before retracting to avoid snapshot jitter flicker
+                                            remote->getFishingProjectile()->startRetractDebounce(0.12f);
                                         }
                                     }
                                 }

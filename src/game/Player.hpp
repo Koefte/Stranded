@@ -5,6 +5,9 @@
 #include <cmath>
 #include "Vector2.hpp"
 #include "GameObject.hpp"
+
+// When host casts locally, broadcast a compact seed-based particle packet to clients
+extern void hostBroadcastParticleForHook(const Vector2& hookTip);
 #include "IAnimatable.hpp"
 #include "ICollidable.hpp"
 #include "IInteractable.hpp"
@@ -126,8 +129,8 @@ public:
 
     void onMouseDown(int button, int mouseX, int mouseY, const Vector2& cameraOffset, float cameraZoom) {
         if (button == SDL_BUTTON_LEFT && isRodVisible() && fishingHook && rod) {
-            // Always retract before casting to allow recasting
-            fishingHook->retract();
+            // Always retract before casting to allow recasting (don't hide to avoid flicker)
+            fishingHook->retract(false);
             // Calculate world position from screen position
             Vector2 worldMousePos = {
                 (mouseX / cameraZoom) + cameraOffset.x,
@@ -149,6 +152,8 @@ public:
             fishingHook->cast(rodTip, direction, worldMousePos);
             // Play cast sound
             SoundManager::instance().playSound("cast", 0, MIX_MAX_VOLUME);
+            // If running as host, broadcast a compact seed packet so clients reproduce the spawn
+            hostBroadcastParticleForHook(rodTip);
         }
     }
 
@@ -156,9 +161,9 @@ public:
     void update(float dt) override {
         IAnimatable::update(dt);  // Always update animation
         
-        // Update fishing hook and its line origin
-        if (fishingHook && fishingHook->getIsActive() && rod) {
-            // Update the line origin to follow the rod position
+        // Update fishing hook's line origin so the line follows the rod.
+        // The actual hook update is handled by the global gameObjects update loop to avoid double-updating.
+        if (fishingHook && rod) {
             Vector2 rodWorld = rod->getWorldPosition();
             Vector2* rodSize = rod->getSize();
             Vector2 rodTip = {
@@ -166,9 +171,6 @@ public:
                 rodWorld.y + rodSize->y
             };
             fishingHook->updateLineOrigin(rodTip);
-            fishingHook->update(dt);
-        } else if (fishingHook) {
-            fishingHook->update(dt);
         }
 
         // Despawn fishing hook if rod is disabled (not visible)

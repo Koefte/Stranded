@@ -34,6 +34,11 @@ private:
     Vector2 attractAbsoluteStart{0.0f,0.0f};
     // Whether to play attract sounds for this scheduled spawn
     bool attractPlaySound = true;
+    // If true, suppress playing the "arrival" sound for the current/previous spawn (used on recast)
+    bool suppressArrivalSoundUntilNextSpawn = false;
+    // Retract debounce to avoid flicker when snapshots briefly indicate inactive
+    float retractDebounce = 0.15f; // seconds
+    float pendingRetractTimer = 0.0f;
     // Pending explicit start positions for networked spawn
     std::vector<Vector2> pendingStartPositions;
     Vector2 pendingEndPosition{0.0f,0.0f};
@@ -47,6 +52,9 @@ private:
     int lastAttractAliveCount = 0;
     // Callback invoked when attract particles have finished arriving
     std::function<void()> onAttractArrival = nullptr;
+
+    // Callback invoked when the hook reaches its destination (owner id unknown to the hook)
+    std::function<void(const Vector2&)> onHookArrival = nullptr;
 
 public:
     FishingHook(Vector2 pos, Vector2 sizeMultiplier, const char* spritePath, SDL_Renderer* renderer, int zIndex = 2)
@@ -72,6 +80,10 @@ public:
         onAttractArrival = cb;
     }
 
+    void setOnHookArrival(std::function<void(const Vector2&)> cb) {
+        onHookArrival = cb;
+    }
+
     // Enable or disable a visual debug overlay that shows received particle start positions
     void setAttractDebug(bool enable) {
         attractDebugDraw = enable;
@@ -81,9 +93,20 @@ public:
         }
     }
 
+    // Retract debounce helpers used by snapshot syncing to avoid flicker
+    void startRetractDebounce(float t) {
+        pendingRetractTimer = t;
+    }
+
+    void cancelPendingRetract() {
+        pendingRetractTimer = 0.0f;
+    }
+
     // Ensure all positions are world coordinates
     // When casting, set position and targetPos in world coordinates
     void cast(Vector2 startPos, Vector2 direction, Vector2 mousePos, float castSpeed = 200.0f, bool playAttractSound = true) {
+        // Cancel any pending retract (we're recasting so it must stay visible)
+        pendingRetractTimer = 0.0f;
         Vector2* pos = getPosition();
         pos->x = startPos.x;
         pos->y = startPos.y;
@@ -99,6 +122,7 @@ public:
         }
         isActive = true;
         setVisible(true);
+        SDL_Log("FishingHook %p cast target=(%.2f,%.2f) playAttractSound=%d", this, mousePos.x, mousePos.y, playAttractSound);
         // Schedule attract particles to spawn after a random delay (local-only)
         // Make delays always longer than the previous range (0.5-2.5s)
         if (!hasAttractSeed) {
@@ -107,10 +131,23 @@ public:
             attractPending = true;
             attractPlaySound = playAttractSound;
             attractUseAbsoluteStart = false;
+            // Reset suppression when a new local spawn is created
+            suppressArrivalSoundUntilNextSpawn = false;
+            SDL_Log("FishingHook %p local scheduled attract delay=%.2f", this, attractTimer);
         }
     }
 
     void update(float dt) override {
+        // Handle pending retract debounce first
+        if (pendingRetractTimer > 0.0f) {
+            pendingRetractTimer -= dt;
+            if (pendingRetractTimer <= 0.0f) {
+                // Perform the actual retract now with hiding
+                retract(true);
+                pendingRetractTimer = 0.0f;
+            }
+        }
+
         if (!isActive) return;
 
         // Apply gravity
@@ -123,6 +160,7 @@ public:
 
         // Check if hook has reached or passed the target position (mouse)
         float distToTarget = std::sqrt((pos->x - targetPos.x) * (pos->x - targetPos.x) + (pos->y - targetPos.y) * (pos->y - targetPos.y));
+        bool prevDestReached = destReached;
         if (distToTarget < 8.0f ||
             ((velocity.x > 0 && pos->x >= targetPos.x) || (velocity.x < 0 && pos->x <= targetPos.x)) &&
             ((velocity.y > 0 && pos->y >= targetPos.y) || (velocity.y < 0 && pos->y <= targetPos.y))) {
@@ -131,6 +169,12 @@ public:
             pos->y = targetPos.y;
             destReached = true;
             velocity = {0.0f, 0.0f};
+        }
+
+        // If we've just reached the destination this frame, invoke arrival callback
+        if (destReached && !prevDestReached) {
+            SDL_Log("FishingHook %p arrived at (%.2f,%.2f)", this, pos->x, pos->y);
+            if (onHookArrival) onHookArrival(getWorldPosition());
         }
 
         // (removed immediate arrival burst; only delayed attract particles are used)
@@ -151,6 +195,7 @@ public:
                 }
                 Vector2 startCenter;
                 if (!pendingStartPositions.empty()) {
+                    SDL_Log("FishingHook %p spawnFromPositions count=%d", this, static_cast<int>(pendingStartPositions.size()));
                     // Use explicit particle start positions provided by the host (networked)
                     if (attractParticles) {
                         SDL_Color col = attractColor;
@@ -168,6 +213,7 @@ public:
                     } else {
                         startCenter = { hookPos.x + std::cos(angle) * radius, hookPos.y + std::sin(angle) * radius };
                     }
+                    SDL_Log("FishingHook %p spawning count=%d seed=%d start=(%.2f,%.2f) hook=(%.2f,%.2f)", this, attractCount, hasAttractSeed ? static_cast<int>(attractSeed) : -1, startCenter.x, startCenter.y, hookPos.x, hookPos.y);
                     // Emit particles that move from startCenter toward the current hook position
                     if (attractParticles) {
                         int count = attractCount > 0 ? attractCount : 10;
@@ -189,6 +235,7 @@ public:
                 }
                 attractPending = false;
                 hasAttractSeed = false;
+                SDL_Log("FishingHook %p finished scheduling spawn (pending now=%d)", this, attractPending);
             }
         }
         if (attractParticles) {
@@ -199,11 +246,15 @@ public:
                 if (p.alive) ++alive;
             }
             if (lastAttractAliveCount > 0 && alive == 0) {
-                // Play arrival sound once, only if allowed for this spawn
-                if (attractPlaySound) SoundManager::instance().playSound("attract_arrival", 0, MIX_MAX_VOLUME);
+                // Play arrival sound once, only if allowed for this spawn and not suppressed due to recast
+                if (!suppressArrivalSoundUntilNextSpawn && attractPlaySound) {
+                    SoundManager::instance().playSound("attract_arrival", 0, MIX_MAX_VOLUME);
+                }
                 // Invoke optional arrival callback
                 if (onAttractArrival) onAttractArrival();
                 lastAttractAliveCount = 0;
+                // Reset suppression after handling arrival
+                suppressArrivalSoundUntilNextSpawn = false;
             } else {
                 lastAttractAliveCount = alive;
             }
@@ -215,11 +266,24 @@ public:
         }
     }
 
-    void retract() {
+    void retract(bool hide = true) {
+        SDL_Log("FishingHook %p retract (wasActive=%d) hide=%d", this, isActive, hide);
         isActive = false;
         destReached = false;
-        if (attractParticles) attractParticles->getParticles().clear();
-        setVisible(false);
+        if (attractParticles) {
+            attractParticles->getParticles().clear();
+        }
+        // Cancel any pending attract spawn and explicit start positions so no future particles are emitted
+        cancelPendingAttract();
+        pendingStartPositions.clear();
+        pendingDuration = 0.0f;
+        attractPlaySound = false;
+        // Suppress arrival sound from any in-flight particles (they were cleared on retract)
+        suppressArrivalSoundUntilNextSpawn = true;
+        lastAttractAliveCount = 0;
+        // Cancel any pending retract timer (we're retracting now)
+        pendingRetractTimer = 0.0f;
+        if (hide) setVisible(false);
         velocity = {0.0f, 0.0f};
     }
 
@@ -229,6 +293,8 @@ public:
         pendingEndPosition = end;
         pendingDuration = duration;
         attractPlaySound = playSound;
+        // New spawn: clear suppression so arrival sound plays for this spawn
+        suppressArrivalSoundUntilNextSpawn = false;
         attractPending = true;
         attractTimer = delay;
         // If debug drawing is enabled, snapshot these positions for visual verification
@@ -240,7 +306,9 @@ public:
 
     // Schedule attract spawn deterministically from a seed (does not emit immediately)
     // If useAbsoluteStart==true, `absoluteStart` is used for particle origin; otherwise host/client compute relative start
-    void scheduleAttractFromSeed(uint32_t seed, int count, SDL_Color color, float duration, int zIndex, float spread = 12.0f, Vector2 absoluteStart = {0,0}, bool useAbsoluteStart = false, bool playSound = true) {
+    // Accept an explicit delay (host-determined). If delay < 0, compute delay deterministically from seed.
+    void scheduleAttractFromSeed(uint32_t seed, int count, SDL_Color color, float duration, int zIndex, float spread = 12.0f, Vector2 absoluteStart = {0,0}, bool useAbsoluteStart = false, bool playSound = true, float delay = -1.0f) {
+        SDL_Log("FishingHook %p scheduleAttractFromSeed seed=%u count=%d delay=%.2f useAbs=%d", this, seed, count, delay, useAbsoluteStart);
         attractSeed = seed;
         hasAttractSeed = true;
         attractCount = count;
@@ -251,15 +319,46 @@ public:
         attractUseAbsoluteStart = useAbsoluteStart;
         attractAbsoluteStart = absoluteStart;
         attractPlaySound = playSound;
-        // Seed temporary RNG to compute delay and radius/angle deterministically
-        std::mt19937 tmp(seed);
-        std::uniform_real_distribution<float> delayDist(2.6f, 5.0f);
+
+        // If the host provided an exact delay, use it; otherwise compute deterministically from the seed
+        if (delay >= 0.0f) {
+            attractTimer = delay;
+        } else {
+            std::mt19937 tmp(seed);
+            std::uniform_real_distribution<float> delayDist(2.6f, 5.0f);
+            attractTimer = delayDist(tmp);
+        }
+
+        // For non-absolute starts, compute radius/angle from seed so local computations match host
+        std::mt19937 tmp2(seed);
         std::uniform_real_distribution<float> radiusDist(40.0f, 140.0f);
         std::uniform_real_distribution<float> angleDist(0.0f, 2.0f * 3.14159265f);
-        attractTimer = delayDist(tmp);
-        attractRadius = radiusDist(tmp);
-        attractAngle = angleDist(tmp);
+        attractRadius = radiusDist(tmp2);
+        attractAngle = angleDist(tmp2);
+
         attractPending = true;
+        // New spawn: clear suppression so arrival sound plays for this spawn
+        suppressArrivalSoundUntilNextSpawn = false;
+
+        SDL_Log("FishingHook %p attractTimer=%.2f radius=%.2f angle=%.2f", this, attractTimer, attractRadius, attractAngle);
+
+        // If debug drawing is enabled, snapshot per-particle positions generated from the seed
+        if (attractDebugDraw) {
+            std::mt19937 seededRng(seed);
+            std::uniform_real_distribution<float> noise(-attractSpread, attractSpread);
+            debugPositions.clear();
+            int c = attractCount > 0 ? attractCount : 10;
+            Vector2 center = attractUseAbsoluteStart ? attractAbsoluteStart : Vector2{0,0};
+            if (!attractUseAbsoluteStart) {
+                // compute center using radius/angle we derived
+                center = { getWorldPosition().x + std::cos(attractAngle) * attractRadius, getWorldPosition().y + std::sin(attractAngle) * attractRadius };
+            }
+            for (int i = 0; i < c; ++i) {
+                debugPositions.emplace_back(Vector2{center.x + noise(seededRng), center.y + noise(seededRng)});
+            }
+            debugTimer = debugDrawDuration;
+            SDL_Log("FishingHook %p debug snapshot %d positions", this, static_cast<int>(debugPositions.size()));
+        }
     }
 
     void cancelPendingAttract() {
@@ -329,5 +428,18 @@ public:
             attractParticles->emit(startCenter, hookPos, count, color, duration, zIndex, spread);
             lastAttractAliveCount = count;
         }
+    }
+
+    // Set the hook state to arrived at the given world position (authoritative)
+    void setArrivedAt(const Vector2& pos) {
+        Vector2* p = getPosition();
+        p->x = pos.x;
+        p->y = pos.y;
+        targetPos = pos;
+        destReached = true;
+        isActive = true; // remains visible until retracted
+        velocity = {0.0f, 0.0f};
+        setVisible(true);
+        SDL_Log("FishingHook %p setArrivedAt (%.2f,%.2f)", this, pos.x, pos.y);
     }
 };
