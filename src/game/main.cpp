@@ -17,6 +17,8 @@
 #include "Rectangle.hpp"
 #include "Boat.hpp"
 #include "DebugObject.hpp"
+#include "UIGameObject.hpp"
+#include "Particle.hpp"
 
 
 //GAME
@@ -34,7 +36,6 @@ static SDL_Texture* navigationIndicatorTexture = nullptr;
 static std::set<SDL_Keycode> pressedInteractKeys;
 // Inventory UI state
 static bool inventoryOpen = false;
-// Example inventory sprite paths (replace with your actual sprites)
 
 
 
@@ -116,8 +117,9 @@ enum RENDER_LAYERS {
     LAYER_BOAT = 1,
     LAYER_LIGHTHOUSE = 2,
     LAYER_PLAYER = 3,
-    LAYER_UI = 4,
-    LAYER_DEBUG = 5,
+    LAYER_PARTICLE = 4,
+    LAYER_UI = 5,
+    LAYER_DEBUG = 6,
 };
 
 Player* getOrCreateRemotePlayer(uint32_t id) {
@@ -531,8 +533,6 @@ int main(int argc, char* argv[]) {
     
     camera->follow(player);
 
-    UIGameObject* testUI = new UIGameObject({0.0f, 0.0f},{1.0f,1.0f},"./sprites/tree.bmp", renderer, LAYER_UI);
-    gameObjects.push_back(testUI);
         
     
     gameObjects.push_back(player);
@@ -607,6 +607,7 @@ int main(int argc, char* argv[]) {
         renderer,
         1
     );
+    
 
     gameObjects.push_back(lighthouse);
     gameObjects.push_back(lighthouseGround);
@@ -957,10 +958,12 @@ int main(int argc, char* argv[]) {
         // Render fishing lines after game objects but before UI
         if (player->getFishingProjectile()) {
             player->getFishingProjectile()->renderLine(renderer, camera->getPosition(), camera->getZoom());
+            player->getFishingProjectile()->renderParticles(renderer, camera->getPosition(), camera->getZoom());
         }
         for (auto& [id, remote] : remotePlayers) {
             if (remote->getFishingProjectile()) {
                 remote->getFishingProjectile()->renderLine(renderer, camera->getPosition(), camera->getZoom());
+                remote->getFishingProjectile()->renderParticles(renderer, camera->getPosition(), camera->getZoom());
             }
         }
 

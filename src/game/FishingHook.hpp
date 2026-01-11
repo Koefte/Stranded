@@ -3,6 +3,7 @@
 #include <SDL.h>
 #include "Vector2.hpp"
 #include "GameObject.hpp"
+#include "ParticleSystem.hpp"
 
 class FishingHook : public GameObject {
 private:
@@ -11,14 +12,19 @@ private:
     Vector2 targetPos; // Where the hook should stop (mouse pos)
     float gravity = 300.0f;
     bool isActive = false;
+    bool destReached = false;
+    bool emittedSplash = false;
+    ParticleSystem* splashParticles = nullptr;
 
 public:
     FishingHook(Vector2 pos, Vector2 sizeMultiplier, const char* spritePath, SDL_Renderer* renderer, int zIndex = 2)
         : GameObject(pos, sizeMultiplier, spritePath, renderer, zIndex),
           velocity({0.0f, 0.0f}),
-          lineOrigin({0.0f, 0.0f})
+          lineOrigin({0.0f, 0.0f}),
+          splashParticles(new ParticleSystem(renderer))
     {
         setVisible(false);
+
     }
 
     Vector2 getTargetPos() const {
@@ -68,12 +74,31 @@ public:
             // Snap to target and stop
             pos->x = targetPos.x;
             pos->y = targetPos.y;
+            destReached = true;
             velocity = {0.0f, 0.0f};
         }
+
+        if(destReached && !emittedSplash){
+            splashParticles->emit(
+                getWorldPosition(),
+                getWorldPosition(),
+                10,
+                SDL_Color{0, 150, 255, 255},
+                5.0f,
+                5
+            );
+            // Do not parent particles to the hook; ParticleSystem renders them independently
+            emittedSplash = true;
+
+        }
+        if(emittedSplash) splashParticles->update(dt);
     }
 
     void retract() {
         isActive = false;
+        destReached = false;
+        emittedSplash = false;
+        splashParticles->getParticles().clear();
         setVisible(false);
         velocity = {0.0f, 0.0f};
     }
@@ -109,5 +134,10 @@ public:
         // Draw fishing line (brown color)
         SDL_SetRenderDrawColor(renderer, 139, 69, 19, 255);
         SDL_RenderDrawLine(renderer, x1, y1, x2, y2);
+    }
+
+    // Render splash particles (called from main render loop)
+    void renderParticles(SDL_Renderer* renderer, const Vector2& cameraOffset, float cameraZoom) {
+        if (splashParticles) splashParticles->render(renderer, cameraOffset, cameraZoom);
     }
 };

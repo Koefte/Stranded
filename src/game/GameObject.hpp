@@ -354,12 +354,16 @@ class GameObject{
         position.y += dy;
     }
 
+    void setPosition(Vector2 newPos) {
+        position = newPos;
+    }
+
     Vector2 getCenteredPosition() {
         Vector2 worldPos = getWorldPosition();
         return {worldPos.x + size.x / 2.0f, worldPos.y + size.y / 2.0f};
     }
 
-    Vector2* getSize() {
+    Vector2* getSize()  {
         return &size;
     }
 
