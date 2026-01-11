@@ -30,7 +30,12 @@ static const int CHUNK_SIZE_PX = 512; // world-space pixels per chunk
 static bool navigationUIActive = false;
 static SDL_Texture* navigationClockTexture = nullptr;
 static SDL_Texture* navigationIndicatorTexture = nullptr;
+
 static std::set<SDL_Keycode> pressedInteractKeys;
+// Inventory UI state
+static bool inventoryOpen = false;
+// Example inventory sprite paths (replace with your actual sprites)
+
 
 
 // Networking
@@ -640,6 +645,10 @@ int main(int argc, char* argv[]) {
                 }
             }
             else if(event.type == SDL_KEYDOWN){
+                // Inventory open while Tab is held
+                if(event.key.keysym.sym == SDLK_TAB) {
+                    inventoryOpen = true;
+                }
                 
                 if(event.key.keysym.sym == SDLK_0){
                     SDL_Log("Player position: (%.2f, %.2f)", player->getPosition()->x, player->getPosition()->y);
@@ -715,7 +724,10 @@ int main(int argc, char* argv[]) {
             else if(event.type == SDL_KEYUP){
                 // Remove key from pressed set when released
                 pressedInteractKeys.erase(event.key.keysym.sym);
-                
+                // Close inventory when Tab is released
+                if(event.key.keysym.sym == SDLK_TAB) {
+                    inventoryOpen = false;
+                }
                 // Only pass key to player if navigation UI is not active
                 if(!navigationUIActive){
                     player->onKeyUp(event.key.keysym.sym);
@@ -877,8 +889,8 @@ int main(int argc, char* argv[]) {
         // Ensure environment chunks exist around current player location
         ensureChunksAround(renderer, player->getWorldPosition(), 1);
 
-        // Skip game updates when navigation UI is active
-        if(!navigationUIActive){
+        // Skip game updates when navigation UI is active or inventory is open
+        if(!navigationUIActive && !inventoryOpen){
             // Update all objects first
             for(GameObject* obj: gameObjects){
                 obj->update(static_cast<float>(dt));
@@ -938,7 +950,9 @@ int main(int argc, char* argv[]) {
             }
         }
         
+
         camera->render(renderer,gameObjects);
+
 
         // Render fishing lines after game objects but before UI
         if (player->getFishingProjectile()) {
@@ -947,6 +961,51 @@ int main(int argc, char* argv[]) {
         for (auto& [id, remote] : remotePlayers) {
             if (remote->getFishingProjectile()) {
                 remote->getFishingProjectile()->renderLine(renderer, camera->getPosition(), camera->getZoom());
+            }
+        }
+
+        // Inventory UI rendering
+        if (inventoryOpen) {
+            // Darken the entire screen
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 200); // More opaque black
+            SDL_Rect screenRect = {0, 0, WIN_WIDTH, WIN_HEIGHT};
+            SDL_RenderFillRect(renderer, &screenRect);
+
+            // Grid parameters
+            const int cols = 5, rows = 3;
+            const int cellSize = 64;
+            const int padding = 12;
+            int gridWidth = cols * cellSize + (cols - 1) * padding;
+            int gridHeight = rows * cellSize + (rows - 1) * padding;
+            int startX = (WIN_WIDTH - gridWidth) / 2;
+            int startY = (WIN_HEIGHT - gridHeight) / 2;
+
+            // Load the inventory sprite once
+            static SDL_Texture* invTex = nullptr;
+            if (!invTex) {
+                SDL_Surface* surf = SDL_LoadBMP("./sprites/Inventory.bmp");
+                if (surf) {
+                    invTex = SDL_CreateTextureFromSurface(renderer, surf);
+                    SDL_FreeSurface(surf);
+                }
+            }
+
+            for (int row = 0; row < rows; ++row) {
+                for (int col = 0; col < cols; ++col) {
+                    SDL_Rect dstRect = {
+                        startX + col * (cellSize + padding),
+                        startY + row * (cellSize + padding),
+                        cellSize, cellSize
+                    };
+                    // Draw slot background (optional)
+                    SDL_SetRenderDrawColor(renderer, 60, 60, 60, 220);
+                    SDL_RenderFillRect(renderer, &dstRect);
+                    // Draw the inventory sprite
+                    if (invTex) {
+                        SDL_RenderCopy(renderer, invTex, nullptr, &dstRect);
+                    }
+                }
             }
         }
 
