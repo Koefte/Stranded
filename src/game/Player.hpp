@@ -13,6 +13,11 @@ extern void hostBroadcastParticleForHook(const Vector2& hookTip);
 #include "IInteractable.hpp"
 #include "Rod.hpp"
 #include "FishingHook.hpp"
+#include "Gun.hpp"
+#include <vector>
+
+// Access global gameObjects so Player can register projectiles
+extern std::vector<GameObject*> gameObjects;
 
 class Player : public IAnimatable, public ICollidable {
 private:
@@ -23,6 +28,7 @@ private:
     SDL_Renderer* renderer;
     Rod* rod = nullptr;
     FishingHook* fishingHook = nullptr;
+    Gun* gun = nullptr;
 
     // Player equipment enum (public API via equip/getEquipment)
     
@@ -54,6 +60,11 @@ public:
         
         // Create fishing Rod projectile (not a child, moves independently)
         fishingHook = new FishingHook({0.0f, 0.0f}, {2.0f, 2.0f}, "./sprites/Hook.bmp", renderer, zIndex + 2);
+
+        // Create harpoon gun as a child (hidden by default)
+        gun = new Gun({-4.0f, 8.0f}, {1.0f,1.0f}, "./sprites/gun.bmp", renderer, zIndex + 1);
+        addChild(gun);
+        gun->hide();
     }
 
     // Public getter for the player's rod
@@ -64,6 +75,8 @@ public:
     FishingHook* getFishingProjectile() const {
         return fishingHook;
     }
+
+    Gun* getGun() const { return gun; }
 
     // Mark this player as remote-controlled (do not play local-only sounds)
     void setRemote(bool remote) { isRemote = remote; }
@@ -76,13 +89,16 @@ public:
         currentEquipment = e;
         if (e == EQUIP_ROD) {
             if (rod) rod->show();
+            if (gun) gun->hide();
             SDL_Log("Player: equipped Rod");
         } else if (e == EQUIP_HARPOON) {
+            // Show gun and hide rod
             if (rod) rod->hide();
-            SDL_Log("Player: equipped Harpoon (placeholder)");
-            // Placeholder hook for harpoon setup - user can extend behavior here
+            if (gun) gun->show();
+            SDL_Log("Player: equipped Harpoon");
         } else {
             if (rod) rod->hide();
+            if (gun) gun->hide();
             SDL_Log("Player: equipped None");
         }
     }
@@ -97,6 +113,10 @@ public:
         if (rod) {
             removeChild(rod);
             delete rod;
+        }
+        if (gun) {
+            removeChild(gun);
+            delete gun;
         }
         if (fishingHook) {
             delete fishingHook;
@@ -151,6 +171,24 @@ public:
     }
 
     void onMouseDown(int button, int mouseX, int mouseY, const Vector2& cameraOffset, float cameraZoom) {
+        // Harpoon firing when equipped
+        if (button == SDL_BUTTON_LEFT && currentEquipment == EQUIP_HARPOON && gun) {
+            Vector2 worldMousePos = {
+                (mouseX / cameraZoom) + cameraOffset.x,
+                (mouseY / cameraZoom) + cameraOffset.y
+            };
+            Projectile* proj = gun->getProjectile();
+            if (proj) {
+                // Ensure projectile is part of global updates
+                if (std::find(gameObjects.begin(), gameObjects.end(), proj) == gameObjects.end()) {
+                    gameObjects.push_back(proj);
+                }
+                gun->fireAt(worldMousePos);
+                SoundManager::instance().playSound("shoot", 0, MIX_MAX_VOLUME);
+            }
+            return; // consume click
+        }
+
         if (button == SDL_BUTTON_LEFT && isRodVisible() && fishingHook && rod) {
             // Always retract before casting to allow recasting (don't hide to avoid flicker)
             fishingHook->retract(false);

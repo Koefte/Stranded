@@ -147,6 +147,7 @@ static std::unordered_map<uint32_t, Player*> remotePlayers;
 static bool clientBoardingRequest = false;
 static bool clientBoatMovementToggle = false;
 static bool clientHookToggle = false;
+static uint8_t clientEquipRequest = 0; // 0=no request, 1=rod, 2=harpoon
 // RNG for networked events
 static std::mt19937 netRng(std::random_device{}());
 
@@ -231,6 +232,11 @@ struct InputPacket {
     int32_t hookTargetY;
     int32_t hookStartX;
     int32_t hookStartY;
+
+    uint8_t equipAction; // 0 = none, 1 = equip rod, 2 = equip harpoon
+    uint8_t fireWeapon; // 0 = none, 1 = fire weapon (harpoon)
+    int32_t weaponTargetX;
+    int32_t weaponTargetY;
 };
 
 struct BoatState {
@@ -250,6 +256,12 @@ struct PlayerState {
     uint8_t fishingHookActive; // 0 = not active, 1 = active
     float fishingHookX, fishingHookY; // world position of hook
     float fishingHookTargetX, fishingHookTargetY; // mouse destination
+
+    // Equipment & projectile (harpoon) state
+    uint8_t equipment; // 0=none, 1=rod, 2=harpoon
+    uint8_t projectileActive; // 0 = not active, 1 = active
+    float projectileX, projectileY; // world position of projectile
+    float projectileTargetX, projectileTargetY; // projectile destination
 };
 
 struct SnapshotHeader {
@@ -541,6 +553,16 @@ void sendInputPacket() {
     
     uint8_t toggleHook = clientHookToggle ? 1 : 0;
     clientHookToggle = false; // Reset after sending
+
+    // Equipment request (set when client selects from wheel)
+    static uint8_t clientEquipRequest = 0;
+    uint8_t equipAction = clientEquipRequest;
+    clientEquipRequest = 0; // reset
+
+    // Weapon fire (edge trigger based on mouse down + current equipment)
+    uint8_t fireWeapon = 0;
+    int32_t weaponTargetX = 0;
+    int32_t weaponTargetY = 0;
     
     // Send boat navigation direction if we have control
     uint8_t hasBoatControl = navigationUIActive ? 1 : 0;
@@ -589,10 +611,22 @@ void sendInputPacket() {
     Vector2* rodSize = rod->getSize();
     float hookStartX = rodWorld.x + rodSize->x / 2.0f;
     float hookStartY = rodWorld.y + rodSize->y;
+    // Determine weapon fire (if player is holding harpoon and clicked)
+    if (sendMouseDown && player && player->getEquipment() == Player::EQUIP_HARPOON) {
+        fireWeapon = 1;
+        weaponTargetX = hookTargetX;
+        weaponTargetY = hookTargetY;
+    }
+
     // Log the rod tip world position being sent
     InputPacket pkt{clientId, inputSeq++, moveFlags, boardBoat, toggleBoatMovement, hasBoatControl, toggleHook, navDir.x, navDir.y, sendMouseDown, static_cast<int32_t>(worldX), static_cast<int32_t>(worldY), hookTargetX, hookTargetY};
     pkt.hookStartX = static_cast<int32_t>(hookStartX);
     pkt.hookStartY = static_cast<int32_t>(hookStartY);
+    pkt.equipAction = equipAction;
+    pkt.fireWeapon = fireWeapon;
+    pkt.weaponTargetX = weaponTargetX;
+    pkt.weaponTargetY = weaponTargetY;
+
     UDPpacket* out = SDLNet_AllocPacket(sizeof(pkt));
     std::memcpy(out->data, &pkt, sizeof(pkt));
     out->len = sizeof(pkt);
@@ -665,6 +699,29 @@ void receiveInputs() {
                 if (pkt.toggleHook == 1) {
                     remote->onKeyDown(SDLK_r);
                 }
+
+                // Handle equip requests from client
+                if (pkt.equipAction == 1) {
+                    remote->equipRod();
+                } else if (pkt.equipAction == 2) {
+                    remote->equipHarpoon();
+                }
+
+                // Handle weapon fire (harpoon)
+                if (pkt.fireWeapon == 1) {
+                    if (remote->getEquipment() != Player::EQUIP_HARPOON) remote->equipHarpoon();
+                    if (remote->getGun() && remote->getGun()->getProjectile()) {
+                        Vector2 target = { static_cast<float>(pkt.weaponTargetX), static_cast<float>(pkt.weaponTargetY) };
+                        // Ensure projectile is part of world updates
+                        Projectile* rp = remote->getGun()->getProjectile();
+                        if (std::find(gameObjects.begin(), gameObjects.end(), rp) == gameObjects.end()) {
+                            gameObjects.push_back(rp);
+                        }
+                        remote->getGun()->fireAt(target);
+                        SDL_Log("Host: Fired harpoon for client %u toward (%.2f, %.2f)", pkt.clientId, target.x, target.y);
+                    }
+                }
+
                 // Handle mouse click for fishing hook casting
                     if (pkt.mouseDown == 1 && remote->isRodVisible() && remote->getFishingProjectile()) {
                     // Use client-sent rod tip world position as the authoritative cast origin
@@ -919,7 +976,22 @@ void broadcastSnapshot() {
         fishingHookTargetX = player->getFishingProjectile()->getTargetPos().x;
         fishingHookTargetY = player->getFishingProjectile()->getTargetPos().y;
     }
-    states.push_back({0, pos.x, pos.y, vel.x, vel.y, 0, onBoat, hooking, fishingHookActive, fishingHookX, fishingHookY, fishingHookTargetX, fishingHookTargetY});
+
+    // Equipment & projectile state
+    uint8_t equipment = static_cast<uint8_t>(player->getEquipment());
+    uint8_t projectileActive = 0;
+    float projectileX = 0.0f, projectileY = 0.0f, projectileTargetX = 0.0f, projectileTargetY = 0.0f;
+    if (player->getEquipment() == Player::EQUIP_HARPOON && player->getGun() && player->getGun()->getProjectile()) {
+        Projectile* p = player->getGun()->getProjectile();
+        projectileActive = p->isActive() ? 1 : 0;
+        if (projectileActive) {
+            Vector2 pp = p->getWorldPosition();
+            projectileX = pp.x; projectileY = pp.y;
+            projectileTargetX = p->getTargetPos().x; projectileTargetY = p->getTargetPos().y;
+        }
+    }
+
+    states.push_back({0, pos.x, pos.y, vel.x, vel.y, 0, onBoat, hooking, fishingHookActive, fishingHookX, fishingHookY, fishingHookTargetX, fishingHookTargetY, equipment, projectileActive, projectileX, projectileY, projectileTargetX, projectileTargetY});
     
     // Add remote players
     for (auto& [id, p] : remotePlayers) {
@@ -936,7 +1008,21 @@ void broadcastSnapshot() {
             rFishingHookTargetX = p->getFishingProjectile()->getTargetPos().x;
             rFishingHookTargetY = p->getFishingProjectile()->getTargetPos().y;
         }
-        states.push_back({id, rpos.x, rpos.y, rvel.x, rvel.y, 0, rOnBoat, rHooking, rFishingHookActive, rFishingHookX, rFishingHookY, rFishingHookTargetX, rFishingHookTargetY});
+
+        uint8_t rEquipment = static_cast<uint8_t>(p->getEquipment());
+        uint8_t rProjectileActive = 0;
+        float rProjectileX = 0.0f, rProjectileY = 0.0f, rProjectileTargetX = 0.0f, rProjectileTargetY = 0.0f;
+        if (p->getEquipment() == Player::EQUIP_HARPOON && p->getGun() && p->getGun()->getProjectile()) {
+            Projectile* rp = p->getGun()->getProjectile();
+            rProjectileActive = rp->isActive() ? 1 : 0;
+            if (rProjectileActive) {
+                Vector2 pp = rp->getWorldPosition();
+                rProjectileX = pp.x; rProjectileY = pp.y;
+                rProjectileTargetX = rp->getTargetPos().x; rProjectileTargetY = rp->getTargetPos().y;
+            }
+        }
+
+        states.push_back({id, rpos.x, rpos.y, rvel.x, rvel.y, 0, rOnBoat, rHooking, rFishingHookActive, rFishingHookX, rFishingHookY, rFishingHookTargetX, rFishingHookTargetY, rEquipment, rProjectileActive, rProjectileX, rProjectileY, rProjectileTargetX, rProjectileTargetY});
     }
     
     // Boat state
@@ -1511,9 +1597,11 @@ int main(int argc, char* argv[]) {
                         if (sel == 0) {
                             SDL_Log("Equipment wheel: Rod selected");
                             player->equipRod();
+                            clientEquipRequest = 1;
                         } else {
                             SDL_Log("Equipment wheel: Harpoon selected (placeholder)");
                             player->equipHarpoon();
+                            clientEquipRequest = 2;
                         }
                         equipmentWheelOpen = false; 
                     } else if (event.button.button == SDL_BUTTON_RIGHT) {
@@ -1800,6 +1888,10 @@ int main(int argc, char* argv[]) {
                                 
                                 remote->setVelocity({states[i].vx, states[i].vy});
                                 remote->setRodVisible(states[i].isHooking != 0);
+                                // Sync equipment
+                                if (states[i].equipment == Player::EQUIP_HARPOON) remote->equipHarpoon();
+                                else if (states[i].equipment == Player::EQUIP_ROD) remote->equipRod();
+
                                 // Sync fishing hook for remote player only (after applying boarding/position)
                                 if (remote->getFishingProjectile()) {
                                     if (states[i].fishingHookActive) {
@@ -1822,6 +1914,31 @@ int main(int argc, char* argv[]) {
                                         if (remote->getFishingProjectile()->getIsActive()) {
                                             // Start a short debounce before retracting to avoid snapshot jitter flicker
                                             remote->getFishingProjectile()->startRetractDebounce(0.12f);
+                                        }
+                                    }
+                                }
+
+                                // Sync harpoon projectile if present
+                                if (remote->getGun() && remote->getGun()->getProjectile()) {
+                                    Projectile* rp = remote->getGun()->getProjectile();
+                                    if (states[i].projectileActive) {
+                                        Vector2 ppos = { states[i].projectileX, states[i].projectileY };
+                                        Vector2 ptarget = { states[i].projectileTargetX, states[i].projectileTargetY };
+                                        if (!rp->isActive()) {
+                                            // Activate projectile at reported position/target
+                                            if (std::find(gameObjects.begin(), gameObjects.end(), rp) == gameObjects.end()) gameObjects.push_back(rp);
+                                            rp->setState(ppos, ptarget, true);
+                                        } else {
+                                            // Update position to match snapshot
+                                            Vector2* rpos = rp->getPosition();
+                                            rpos->x = ppos.x;
+                                            rpos->y = ppos.y;
+                                            rp->setVisible(true);
+                                        }
+                                    } else {
+                                        if (rp->isActive()) {
+                                            // deactivate to avoid snapshot jitter
+                                            rp->setState(rp->getWorldPosition(), rp->getTargetPos(), false);
                                         }
                                     }
                                 }
