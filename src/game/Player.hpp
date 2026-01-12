@@ -24,6 +24,7 @@ private:
     Rod* rod = nullptr;
     FishingHook* fishingHook = nullptr;
     bool walkingSoundPlaying = false;
+    bool isRemote = false; // when true, this player should not play local-only sounds like walking
 
 public:
    
@@ -59,6 +60,9 @@ public:
     FishingHook* getFishingProjectile() const {
         return fishingHook;
     }
+
+    // Mark this player as remote-controlled (do not play local-only sounds)
+    void setRemote(bool remote) { isRemote = remote; }
 
     ~Player() {
         if (rod) {
@@ -199,8 +203,8 @@ public:
             pos->x += dx * dt;
             pos->y += dy * dt;
             startAnimation();
-            // Start walking sound if not already playing
-            if (!walkingSoundPlaying) {
+            // Start walking sound if not already playing and only for local players
+            if (!walkingSoundPlaying && !isRemote) {
                 SoundManager::instance().playSound("walk", -1, MIX_MAX_VOLUME / 2);
                 walkingSoundPlaying = true;
             }
@@ -208,9 +212,9 @@ public:
             velocity.x = 0.0f;
             velocity.y = 0.0f;
             stopAnimation();
-            // Stop walking sound when movement stops
+            // Stop walking sound when movement stops (only stop if it was playing locally)
             if (walkingSoundPlaying) {
-                SoundManager::instance().stopSound("walk");
+                if (!isRemote) SoundManager::instance().stopSound("walk");
                 walkingSoundPlaying = false;
             }
         }

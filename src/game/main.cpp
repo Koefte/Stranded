@@ -21,6 +21,11 @@
 #include "UIGameObject.hpp"
 #include "Particle.hpp"
 #include "../audio/SoundManager.hpp"
+#include <SDL_ttf.h>
+#include "Text.hpp"
+
+// Track whether TTF was successfully initialized
+static bool ttfInitialized = false;
 
 //GAME
 static std::vector<GameObject*> gameObjects;
@@ -485,6 +490,7 @@ Player* getOrCreateRemotePlayer(uint32_t id) {
         "./sprites/Boy_Walk4.bmp"
     };
     Player* remote = new Player({0.0f, 0.0f}, {2.0f, 2.0f}, remoteSprites, 4, g_renderer, 0.1f, LAYER_PLAYER);
+    remote->setRemote(true); // mark this as a remote-controlled player so it doesn't play local sounds
     remotePlayers[id] = remote;
     gameObjects.push_back(remote); // Add player
     if (remote->getFishingProjectile()) {
@@ -1011,6 +1017,14 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Initialize TTF (optional; required for in-game text rendering)
+    if (TTF_Init() == -1) {
+        std::cerr << "Warning: TTF_Init failed: " << TTF_GetError() << "\n";
+        ttfInitialized = false;
+    } else {
+        ttfInitialized = true;
+    }
+
     // Initialize audio subsystem (SDL_mixer)
     if (!SoundManager::instance().init()) {
         std::cerr << "Warning: audio initialization failed, continuing without sound.\n";
@@ -1198,6 +1212,11 @@ int main(int argc, char* argv[]) {
     );
     
 
+    UIGameObject* coin = new UIGameObject({20.0f,20.0f},{5.0f,5.0f},"./sprites/coin.bmp",renderer,LAYER_UI);
+    // Create a UI text label for coin count: (pos, text, fontPath, fontSize, renderer, color, zIndex)
+    Text *coinText = new Text({100.0f,35.0f}, "x0", "./fonts/font.ttf", 48, renderer, SDL_Color{0,0,0,255}, LAYER_UI);
+    gameObjects.push_back(coinText);
+    gameObjects.push_back(coin);
     gameObjects.push_back(lighthouse);
     gameObjects.push_back(lighthouseGround);
     
@@ -2076,6 +2095,11 @@ int main(int argc, char* argv[]) {
     
     // Shutdown audio
     SoundManager::instance().quit();
+
+    // Shutdown TTF if initialized
+    if (ttfInitialized) {
+        TTF_Quit();
+    }
 
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
