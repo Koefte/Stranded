@@ -71,6 +71,9 @@ private:
             return;
         }
 
+        // Ensure alpha blending is enabled so text renders with transparency
+        SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+
         SDL_FreeSurface(surf);
         setSprite(tex);
     }

@@ -2,6 +2,7 @@
 #include "IInteractable.hpp"
 #include "SDL.h"
 
+extern void openLighthouseShop();
 class Lighthouse : public IInteractable {
 public:
     Lighthouse(Vector2 pos, Vector2 sizeMultiplier, SDL_Renderer* renderer, int zIndex = 0)
@@ -11,7 +12,13 @@ public:
     {
     }
 
+    // Declare the shop toggle implemented in main.cpp
+    
     void onInteract(SDL_Keycode key) override {
-        
+        SDL_Log("Lighthouse interacted with key: %d", key);
+        if (key == SDLK_e) {
+            // Open the lighthouse shop UI
+            openLighthouseShop();
+        }
     }
 };

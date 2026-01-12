@@ -24,6 +24,7 @@
 #include <SDL_ttf.h>
 #include "Text.hpp"
 #include "Lighthouse.hpp"
+#include <string>
 
 // Track whether TTF was successfully initialized
 static bool ttfInitialized = false;
@@ -96,6 +97,14 @@ static std::vector<UIGameObject*> inventorySlots(INV_COLS * INV_ROWS, nullptr); 
 static std::set<SDL_Keycode> pressedInteractKeys;
 // Inventory UI state
 static bool inventoryOpen = false;
+// Lighthouse shop UI state
+static bool lighthouseShopOpen = false;
+static SDL_Rect lighthouseShopRect = {0,0,0,0}; // screen rect for shop grid
+static SDL_Rect lighthouseSellAllRect = {0,0,0,0}; // sell-all button rect
+static Text* lighthouseSellAllLabel = nullptr;
+static Text* lighthouseShopTitle = nullptr;
+static int coinCount = 0;
+static Text* g_coinText = nullptr;
 
 
 
@@ -242,6 +251,33 @@ void hostBroadcastHookArrival(uint32_t ownerId, const Vector2& pos);
 
 // Spawn a fish GameObject at the given world position
 void onHook(const Vector2& pos);
+
+// Open/close the lighthouse shop UI (declared extern in Lighthouse.hpp)
+void openLighthouseShop() {
+    lighthouseShopOpen = !lighthouseShopOpen;
+    if (lighthouseShopOpen) {
+        // Close other UIs that would conflict
+        inventoryOpen = false;
+        SDL_Log("Lighthouse shop opened");
+    } else {
+        SDL_Log("Lighthouse shop closed");
+        // Remove sell-all label if present
+        if (lighthouseSellAllLabel) {
+            auto it = std::find(gameObjects.begin(), gameObjects.end(), lighthouseSellAllLabel);
+            if (it != gameObjects.end()) gameObjects.erase(it);
+            delete lighthouseSellAllLabel;
+            lighthouseSellAllLabel = nullptr;
+        }
+        // Remove title if present
+        if (lighthouseShopTitle) {
+            auto it2 = std::find(gameObjects.begin(), gameObjects.end(), lighthouseShopTitle);
+            if (it2 != gameObjects.end()) gameObjects.erase(it2);
+            delete lighthouseShopTitle;
+            lighthouseShopTitle = nullptr;
+        }
+        lighthouseSellAllRect = {0,0,0,0};
+    }
+}
 
 bool initEnvironmentTiles(SDL_Renderer* renderer) {
         if(envCacheInit) return true;
@@ -1214,6 +1250,8 @@ int main(int argc, char* argv[]) {
     // Create a UI text label for coin count: (pos, text, fontPath, fontSize, renderer, color, zIndex)
     Text *coinText = new Text({100.0f,35.0f}, "x0", "./fonts/font.ttf", 48, renderer, SDL_Color{0,0,0,255}, LAYER_UI);
     gameObjects.push_back(coinText);
+    // expose coin text globally for the shop UI
+    g_coinText = coinText;
     gameObjects.push_back(coin);
     gameObjects.push_back(lighthouse);
     gameObjects.push_back(lighthouseGround);
@@ -1336,6 +1374,56 @@ int main(int argc, char* argv[]) {
                 running = false;
             }
             else if (event.type == SDL_MOUSEBUTTONDOWN) {
+                // If the lighthouse shop is open, handle shop clicks and consume the event
+                if (lighthouseShopOpen && event.button.button == SDL_BUTTON_LEFT) {
+                    int mx = event.button.x;
+                    int my = event.button.y;
+                    // Check if click is inside shop rect
+                    SDL_Rect shopRect = lighthouseShopRect;
+                    if (mx >= shopRect.x && mx <= shopRect.x + shopRect.w && my >= shopRect.y && my <= shopRect.y + shopRect.h) {
+                        // First check for Sell All button
+                        if (mx >= lighthouseSellAllRect.x && mx <= lighthouseSellAllRect.x + lighthouseSellAllRect.w && my >= lighthouseSellAllRect.y && my <= lighthouseSellAllRect.y + lighthouseSellAllRect.h) {
+                            int fishCountLocal = 0;
+                            for (int si = 0; si < INV_COLS * INV_ROWS; ++si) if (inventorySlots[si]) ++fishCountLocal;
+                            if (fishCountLocal > 0) {
+                                int sold = 0;
+                                for (int si = 0; si < INV_COLS * INV_ROWS; ++si) {
+                                    if (inventorySlots[si]) { delete inventorySlots[si]; inventorySlots[si] = nullptr; ++sold; }
+                                }
+                                coinCount += sold;
+                                if (g_coinText) g_coinText->setText(std::string("x") + std::to_string(coinCount));
+                                SDL_Log("Sold all fish (%d), coins=%d", sold, coinCount);
+                            }
+                        } else {
+                            // Grid parameters (match rendering)
+                            const int cols = INV_COLS, rows = INV_ROWS;
+                            const int cellSize = INV_CELL_SIZE, padding = INV_PADDING;
+                            int gridWidth = cols * cellSize + (cols - 1) * padding;
+                            int gridHeight = rows * cellSize + (rows - 1) * padding;
+                            int startX = shopRect.x;
+                            int startY = shopRect.y;
+                            int relX = mx - startX;
+                            int relY = my - startY;
+                            int col = relX / (cellSize + padding);
+                            int row = relY / (cellSize + padding);
+                            if (col >= 0 && col < cols && row >= 0 && row < rows) {
+                                int slotIndex = row * cols + col;
+                                if (slotIndex >= 0 && slotIndex < INV_COLS * INV_ROWS && inventorySlots[slotIndex]) {
+                                    // Sell fish in this slot
+                                    delete inventorySlots[slotIndex];
+                                    inventorySlots[slotIndex] = nullptr;
+                                    coinCount += 1; // one fish = 1 coin (tweakable)
+                                    if (g_coinText) g_coinText->setText(std::string("x") + std::to_string(coinCount));
+                                }
+                            }
+                        }
+                    } else {
+                        // Clicked outside: close the shop
+                        openLighthouseShop();
+                    }
+                    continue; // consume the click
+                }
+
                 // If a fishing minigame is active, intercept left-clicks to resolve it and suppress casting
                 if (fishingMinigameActive && event.button.button == SDL_BUTTON_LEFT) {
                     // Recompute screen rect at click time to match what is drawn (camera may have moved since last frame)
@@ -1447,6 +1535,14 @@ int main(int argc, char* argv[]) {
                 }
             }
             else if(event.type == SDL_KEYDOWN){
+                // If the lighthouse shop is open, consume most keys (allow ESC or E to close)
+                if (lighthouseShopOpen) {
+                    if (event.key.keysym.sym == SDLK_e || event.key.keysym.sym == SDLK_ESCAPE) {
+                        openLighthouseShop();
+                    }
+                    continue;
+                }
+
                 // Inventory open while Tab is held
                 if(event.key.keysym.sym == SDLK_TAB) {
                     inventoryOpen = true;
@@ -1952,6 +2048,118 @@ int main(int argc, char* argv[]) {
                         isz->y = static_cast<float>(dstRect.h);
                     }
                 }
+            }
+        }
+
+        // Lighthouse shop UI rendering
+        if (lighthouseShopOpen) {
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 100); // lighter dim
+            SDL_Rect screenRect = {0, 0, WIN_WIDTH, WIN_HEIGHT};
+            SDL_RenderFillRect(renderer, &screenRect);
+
+            const int cols = INV_COLS, rows = INV_ROWS;
+            const int cellSize = INV_CELL_SIZE, padding = INV_PADDING;
+            int gridWidth = cols * cellSize + (cols - 1) * padding;
+            int gridHeight = rows * cellSize + (rows - 1) * padding;
+            int startX = (WIN_WIDTH - gridWidth) / 2;
+            int startY = (WIN_HEIGHT - gridHeight) / 2;
+
+            // Draw a light panel behind the shop to improve contrast and remove the "heavy" darkening effect
+            SDL_Rect panelRect = { startX - 16, startY - 48, gridWidth + 32, gridHeight + 80 };
+            SDL_SetRenderDrawColor(renderer, 240, 240, 245, 240);
+            SDL_RenderFillRect(renderer, &panelRect);
+            SDL_SetRenderDrawColor(renderer, 200, 200, 210, 255);
+            SDL_RenderDrawRect(renderer, &panelRect);
+
+            // Save rect for click handling (grid area only)
+            lighthouseShopRect = { startX, startY, gridWidth, gridHeight };
+
+            // Draw shop title background (kept for styling)
+            SDL_Rect titleRect = { startX, startY - 42, gridWidth, 36 };
+            SDL_SetRenderDrawColor(renderer, 30, 30, 60, 220);
+            SDL_RenderFillRect(renderer, &titleRect);
+
+            // Use a real Text title instead of a placeholder rectangle
+            if (!lighthouseShopTitle) {
+                // center title in titleRect
+                lighthouseShopTitle = new Text({static_cast<float>(titleRect.x + 8), static_cast<float>(titleRect.y + 6)}, "Lighthouse Shop", "./fonts/font.ttf", 20, renderer, SDL_Color{0,0,0,255}, LAYER_UI);
+                // do not add to gameObjects; render it directly above the panel to ensure visibility
+            } else {
+                Vector2* tpos = lighthouseShopTitle->getPosition();
+                tpos->x = static_cast<float>(titleRect.x + 8);
+                tpos->y = static_cast<float>(titleRect.y + 6);
+            }
+
+            // Draw grid and fish icons
+            static SDL_Texture* shopFishTex = nullptr;
+            if (!shopFishTex) {
+                SDL_Surface* fishSurf = SDL_LoadBMP("./sprites/fish.bmp");
+                if (fishSurf) {
+                    shopFishTex = SDL_CreateTextureFromSurface(renderer, fishSurf);
+                    SDL_FreeSurface(fishSurf);
+                }
+            }
+
+            for (int row = 0; row < rows; ++row) {
+                for (int col = 0; col < cols; ++col) {
+                    SDL_Rect dstRect = { startX + col * (cellSize + padding), startY + row * (cellSize + padding), cellSize, cellSize };
+                    SDL_SetRenderDrawColor(renderer, 80, 80, 80, 220);
+                    SDL_RenderFillRect(renderer, &dstRect);
+
+                    int slotIndex = row * cols + col;
+                    if (slotIndex >= 0 && slotIndex < INV_COLS * INV_ROWS && inventorySlots[slotIndex]) {
+                        if (shopFishTex) SDL_RenderCopy(renderer, shopFishTex, nullptr, &dstRect);
+                    }
+                }
+            }
+
+            // Draw Sell All button (replacing small hint rect)
+            SDL_Rect sellBtn = { startX + gridWidth - 110, startY + gridHeight + 12, 100, 32 };
+            lighthouseSellAllRect = sellBtn; // store globally for click handling
+
+            // Count fish in inventory
+            int fishCount = 0;
+            for (int si = 0; si < INV_COLS * INV_ROWS; ++si) if (inventorySlots[si]) ++fishCount;
+
+            if (fishCount > 0) {
+                SDL_SetRenderDrawColor(renderer, 40, 140, 60, 220); // green when enabled
+            } else {
+                SDL_SetRenderDrawColor(renderer, 80, 80, 80, 180); // greyed out when no fish
+            }
+            SDL_RenderFillRect(renderer, &sellBtn);
+
+            // Ensure Sell All label exists and is placed; update text with count
+            if (!lighthouseSellAllLabel) {
+                lighthouseSellAllLabel = new Text({static_cast<float>(sellBtn.x + 8), static_cast<float>(sellBtn.y + 4)}, (std::string("Sell All (") + std::to_string(fishCount) + ")").c_str(), "./fonts/font.ttf", 18, renderer, SDL_Color{0,0,0,255}, LAYER_UI);
+                // Do NOT add to gameObjects; we render it directly after the panel to ensure visibility
+            } else {
+                // Update position and text
+                Vector2* pos = lighthouseSellAllLabel->getPosition();
+                pos->x = static_cast<float>(sellBtn.x + 8);
+                pos->y = static_cast<float>(sellBtn.y + 4);
+                lighthouseSellAllLabel->setText(std::string("Sell All (") + std::to_string(fishCount) + ")");
+            }
+
+            // Expand the interactive shop rect to include the area below the grid where the Sell All button sits
+            int bottom = std::max(startY + gridHeight, sellBtn.y + sellBtn.h);
+            lighthouseShopRect = { startX, startY, gridWidth, bottom - startY };
+
+            // After drawing the button, draw the labels directly so they appear on top of the panel
+            if (lighthouseShopTitle && lighthouseShopTitle->getSprite()) {
+                SDL_Texture* t = lighthouseShopTitle->getSprite();
+                Vector2* tpos = lighthouseShopTitle->getPosition();
+                Vector2* tsz = lighthouseShopTitle->getSize();
+                SDL_Rect td = { static_cast<int>(tpos->x), static_cast<int>(tpos->y), static_cast<int>(tsz->x), static_cast<int>(tsz->y) };
+                SDL_RenderCopy(renderer, t, nullptr, &td);
+            }
+
+            if (lighthouseSellAllLabel && lighthouseSellAllLabel->getSprite()) {
+                SDL_Texture* s = lighthouseSellAllLabel->getSprite();
+                Vector2* spos = lighthouseSellAllLabel->getPosition();
+                Vector2* ssz = lighthouseSellAllLabel->getSize();
+                SDL_Rect sd = { static_cast<int>(spos->x), static_cast<int>(spos->y), static_cast<int>(ssz->x), static_cast<int>(ssz->y) };
+                SDL_RenderCopy(renderer, s, nullptr, &sd);
             }
         }
 
