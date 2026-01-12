@@ -7,6 +7,9 @@
 #include "Vector2.hpp"
 #include "Rectangle.hpp"
 
+
+class ICollidable;
+
 using json = nlohmann::json;
 
 class GameObject{
@@ -21,72 +24,9 @@ class GameObject{
     std::vector<GameObject*> children;
     bool isVisible = true;
     
-    inline static bool envCacheInit = false;
-    inline static int envTileW = 0;
-    inline static int envTileH = 0;
-    inline static SDL_Texture* envTextures[4] = {nullptr, nullptr, nullptr, nullptr};
 
-    static bool initEnvironmentTiles(SDL_Renderer* renderer, const char* tilemapPath, const char* tilesetPath) {
-        if (envCacheInit) return true;
 
-        std::ifstream file(tilemapPath);
-        if (!file.is_open()) {
-            SDL_Log("Failed to open tilemap file: %s", tilemapPath);
-            return false;
-        }
-
-        json data;
-        try {
-            file >> data;
-        } catch (const std::exception& e) {
-            SDL_Log("Failed to parse tilemap JSON: %s", e.what());
-            return false;
-        }
-
-        envTileW = data["tileWidth"].get<int>();
-        envTileH = data["tileHeight"].get<int>();
-        int mapWidth = data["mapWidth"].get<int>();
-        int mapHeight = data["mapHeight"].get<int>();
-
-        SDL_Surface* tilesetSurface = SDL_LoadBMP(tilesetPath);
-        if (!tilesetSurface) {
-            SDL_Log("Failed to load tileset: %s", tilesetPath);
-            return false;
-        }
-
-        int i = 0;
-        const auto& tilesArray = data["tiles"];
-        for (int y = 0; y < mapHeight && i < 4; y++) {
-            const auto& row = tilesArray[y];
-            for (int x = 0; x < mapWidth && i < 4; x++) {
-                const auto& tile = row[x];
-                if (tile.is_null()) continue;
-
-                int tileX = tile["x"].get<int>();
-                int tileY = tile["y"].get<int>();
-
-                SDL_Rect cutoutRect;
-                cutoutRect.x = tileX * envTileW;
-                cutoutRect.y = tileY * envTileH;
-                cutoutRect.w = envTileW;
-                cutoutRect.h = envTileH;
-
-                SDL_Surface* cutoutSurface = SDL_CreateRGBSurface(0, cutoutRect.w, cutoutRect.h, 32, 0, 0, 0, 0);
-                if (!cutoutSurface) continue;
-                SDL_BlitSurface(tilesetSurface, &cutoutRect, cutoutSurface, nullptr);
-                envTextures[i] = SDL_CreateTextureFromSurface(renderer, cutoutSurface);
-                SDL_FreeSurface(cutoutSurface);
-                if (envTextures[i]) i++;
-            }
-        }
-
-        SDL_FreeSurface(tilesetSurface);
-        envCacheInit = (i == 4);
-        if (!envCacheInit) {
-            SDL_Log("Failed to initialize environment textures (found %d)", i);
-        }
-        return envCacheInit;
-    }
+    
 
     public:
     GameObject(Vector2 pos,const char* spritePath, SDL_Renderer* renderer,int zIndex = 0)
@@ -300,37 +240,6 @@ class GameObject{
         return tiles;
     }
 
-    static std::vector<GameObject*> generateInitialEnvironment(SDL_Renderer* renderer,const char* tilemapPath,const char* tilesetPath,Rectangle area, uint32_t seed = 0) {
-        std::vector<GameObject*> environment;
-        if (!initEnvironmentTiles(renderer, tilemapPath, tilesetPath)) {
-            return environment;
-        }
-
-        uint32_t prng = seed;
-        for (int y = static_cast<int>(area.begin.y); y < static_cast<int>(area.end.y); y += envTileH) {
-            for (int x = static_cast<int>(area.begin.x); x < static_cast<int>(area.end.x); x += envTileW) {
-                int randIndex = 0;
-                if (seed != 0) {
-                    prng = 1664525u * prng + 1013904223u; // LCG
-                    randIndex = (prng >> 16) & 3;
-                } else {
-                    randIndex = rand() % 4;
-                }
-                SDL_Texture* texture = envTextures[randIndex];
-                if (texture) {
-                    GameObject* tileObj = new GameObject(
-                        {static_cast<float>(x), static_cast<float>(y)},
-                        {1.0f, 1.0f},
-                        texture,
-                        renderer,
-                        0
-                    );
-                    environment.push_back(tileObj);
-                }
-            }
-        }
-        return environment;
-    }
 
 
     int getZIndex(){

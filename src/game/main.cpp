@@ -34,6 +34,13 @@ static bool navigationUIActive = false;
 static SDL_Texture* navigationClockTexture = nullptr;
 static SDL_Texture* navigationIndicatorTexture = nullptr;
 
+
+// CHUNK GENERATION
+    static bool envCacheInit = false;
+    static SDL_Texture* envTexture = nullptr;
+    static int envTileW = 0;
+    static int envTileH = 0;
+
 // Fishing minigame state (timed click to catch a fish OR tug-of-the-deep)
 static bool fishingMinigameActive = false;
 static float fishingMinigameTimer = 0.0f;
@@ -229,6 +236,239 @@ void hostBroadcastHookArrival(uint32_t ownerId, const Vector2& pos);
 
 // Spawn a fish GameObject at the given world position
 void onHook(const Vector2& pos);
+
+bool initEnvironmentTiles(SDL_Renderer* renderer) {
+        if(envCacheInit) return true;
+        SDL_Surface* surface = SDL_LoadBMP("./sprites/water1.bmp");
+        if (!surface) {
+            SDL_Log("Failed to load environment tile: %s", SDL_GetError());
+            return false;
+        }
+        envTileW = surface->w;
+        envTileH = surface->h;
+        envTexture = SDL_CreateTextureFromSurface(renderer, surface);
+        SDL_FreeSurface(surface);
+        if (!envTexture) {
+            SDL_Log("Failed to create texture for environment tile: %s", SDL_GetError());
+            return false;
+        }
+        envCacheInit = true;
+        return true;
+}
+
+
+std::vector<GameObject*> generateInitialEnvironment(SDL_Renderer* renderer, Rectangle area, uint32_t seed = 0) {
+    std::vector<GameObject*> environment;
+    if (!initEnvironmentTiles(renderer)) {
+        return environment;
+    }
+
+    uint32_t prng = seed;
+    // First pass: fill with environment tiles
+    std::vector<Vector2> smallIslandPositions;
+    for (int y = static_cast<int>(area.begin.y); y < static_cast<int>(area.end.y); y += envTileH) {
+        for (int x = static_cast<int>(area.begin.x); x < static_cast<int>(area.end.x); x += envTileW) {
+            bool makeSmallIsland = false;
+            if (seed != 0) {
+                prng = 1664525u * prng + 1013904223u; // LCG
+                // Use a byte of PRNG and make small tile islands rarer (~0.78%)
+                int tileRoll = (prng >> 8) & 0xFF;
+                makeSmallIsland = (tileRoll < 2);
+            } else {
+                // Random non-seeded fallback: 1 in 128 (~0.78%)
+                makeSmallIsland = (rand() % 128) == 0;
+            }
+
+            SDL_Texture* texture = envTexture;
+            // Always add the water tile first so islands are drawn on top
+            if (texture) {
+                GameObject* tileObj = new GameObject(
+                    {static_cast<float>(x), static_cast<float>(y)},
+                    {1.0f, 1.0f},
+                    texture,
+                    renderer,
+                    LAYER_ENVIRONMENT
+                );
+                environment.push_back(tileObj);
+            }
+
+            // Record island positions to place in a second pass so islands are drawn over tiles
+            if (makeSmallIsland) {
+                smallIslandPositions.push_back({static_cast<float>(x), static_cast<float>(y)});
+            }
+        }
+    }
+
+    // Decide on a deterministic or random large island BEFORE placing small islands so we can avoid overlap
+    bool hasBigIsland = false;
+    float bigPx = 0.0f, bigPy = 0.0f;
+    int bigTilesWide = 0, bigTilesHigh = 0;
+
+    // Tile grid dimensions for this chunk/area
+    int areaTilesX = static_cast<int>((area.end.x - area.begin.x) / envTileW);
+    int areaTilesY = static_cast<int>((area.end.y - area.begin.y) / envTileH);
+
+    // Safety: if area has no tiles, return early
+    if (areaTilesX <= 0 || areaTilesY <= 0) return environment;
+
+    // Placement constraints - reduce density by increasing spacing and capping islands
+    const int MIN_ISLAND_GAP_TILES = 2; // increased gap between island centers (in tiles)
+    const int EDGE_BUFFER_TILES = 2; // larger buffer from chunk edges to avoid cross-chunk joins
+    const int MAX_SMALL_ISLANDS_PER_CHUNK = 1; // cap small islands per chunk
+
+    if (seed != 0) {
+        // advance PRNG and use a byte to decide
+        prng = 1664525u * prng + 1013904223u;
+        int islandChance = (prng >> 16) & 0xFF; // 0..255
+        // Make large islands rare (~1.6%)
+        if (islandChance < 1) {
+            prng = 1664525u * prng + 1013904223u;
+            int tilesWide = 3 + ((prng >> 16) % 6); // 3..8
+            prng = 1664525u * prng + 1013904223u;
+            int tilesHigh = 3 + ((prng >> 16) % 6);
+
+            // Respect edge buffer when choosing viable placement
+            if (areaTilesX > tilesWide + 2 * EDGE_BUFFER_TILES && areaTilesY > tilesHigh + 2 * EDGE_BUFFER_TILES) {
+                prng = 1664525u * prng + 1013904223u;
+                int maxXOffset = areaTilesX - tilesWide - 2 * EDGE_BUFFER_TILES;
+                int maxYOffset = areaTilesY - tilesHigh - 2 * EDGE_BUFFER_TILES;
+                int offsetX = EDGE_BUFFER_TILES + ((prng >> 16) % (maxXOffset + 1));
+                prng = 1664525u * prng + 1013904223u;
+                int offsetY = EDGE_BUFFER_TILES + ((prng >> 16) % (maxYOffset + 1));
+
+                bigPx = area.begin.x + offsetX * envTileW;
+                bigPy = area.begin.y + offsetY * envTileH;
+                bigTilesWide = tilesWide;
+                bigTilesHigh = tilesHigh;
+                hasBigIsland = true;
+            }
+        }
+    } else {
+        // Non-deterministic run-time chance for a large island when no seed is provided
+        // ~1.6% chance (1 in 64)
+        if ((rand() % 64) == 0) {
+            int tilesWide = 3 + (rand() % 6);
+            int tilesHigh = 3 + (rand() % 6);
+            if (areaTilesX > tilesWide + 2 * EDGE_BUFFER_TILES && areaTilesY > tilesHigh + 2 * EDGE_BUFFER_TILES) {
+                int offsetX = EDGE_BUFFER_TILES + (rand() % (areaTilesX - tilesWide - 2 * EDGE_BUFFER_TILES + 1));
+                int offsetY = EDGE_BUFFER_TILES + (rand() % (areaTilesY - tilesHigh - 2 * EDGE_BUFFER_TILES + 1));
+                bigPx = area.begin.x + offsetX * envTileW;
+                bigPy = area.begin.y + offsetY * envTileH;
+                bigTilesWide = tilesWide;
+                bigTilesHigh = tilesHigh;
+                hasBigIsland = true;
+            }
+        }
+    }
+
+    // Prepare occupancy grid for deterministic spacing and overlap prevention
+    std::vector<uint8_t> occupancy(areaTilesX * areaTilesY, 0);
+
+    // If we have a big island, mark its expanded footprint as occupied (including the MIN_ISLAND_GAP)
+    if (hasBigIsland) {
+        int bigTX = static_cast<int>((bigPx - area.begin.x) / envTileW);
+        int bigTY = static_cast<int>((bigPy - area.begin.y) / envTileH);
+        int minX = std::max(0, bigTX - MIN_ISLAND_GAP_TILES);
+        int minY = std::max(0, bigTY - MIN_ISLAND_GAP_TILES);
+        int maxX = std::min(areaTilesX - 1, bigTX + bigTilesWide - 1 + MIN_ISLAND_GAP_TILES);
+        int maxY = std::min(areaTilesY - 1, bigTY + bigTilesHigh - 1 + MIN_ISLAND_GAP_TILES);
+        for (int ty = minY; ty <= maxY; ++ty) {
+            for (int tx = minX; tx <= maxX; ++tx) {
+                occupancy[ty * areaTilesX + tx] = 1;
+            }
+        }
+    }
+
+    // Shuffle candidate small island positions deterministically when seed present; random otherwise
+    std::vector<Vector2> candidates = smallIslandPositions;
+    if (!candidates.empty()) {
+        if (seed != 0) {
+            std::mt19937 shuf(seed ^ 0x9E3779B9u);
+            std::shuffle(candidates.begin(), candidates.end(), shuf);
+        } else {
+            std::mt19937 shuf(static_cast<uint32_t>(SDL_GetTicks()));
+            std::shuffle(candidates.begin(), candidates.end(), shuf);
+        }
+    }
+
+    int placedSmall = 0;
+    for (const auto &pos : candidates) {
+        int tx = static_cast<int>((pos.x - area.begin.x) / envTileW);
+        int ty = static_cast<int>((pos.y - area.begin.y) / envTileH);
+        if (tx < 0 || tx >= areaTilesX || ty < 0 || ty >= areaTilesY) continue;
+
+        // Respect an edge buffer so islands do not sit on the very edge of a chunk
+        if (tx < EDGE_BUFFER_TILES || tx >= areaTilesX - EDGE_BUFFER_TILES) continue;
+        if (ty < EDGE_BUFFER_TILES || ty >= areaTilesY - EDGE_BUFFER_TILES) continue;
+
+        // Check occupancy in a neighborhood of MIN_ISLAND_GAP_TILES
+        bool blocked = false;
+        for (int oy = -MIN_ISLAND_GAP_TILES; oy <= MIN_ISLAND_GAP_TILES && !blocked; ++oy) {
+            for (int ox = -MIN_ISLAND_GAP_TILES; ox <= MIN_ISLAND_GAP_TILES; ++ox) {
+                int nx = tx + ox;
+                int ny = ty + oy;
+                if (nx < 0 || nx >= areaTilesX || ny < 0 || ny >= areaTilesY) continue;
+                if (occupancy[ny * areaTilesX + nx]) { blocked = true; break; }
+            }
+        }
+        if (blocked) continue;
+
+        // Place island and mark occupancy in its neighborhood to enforce spacing
+        ICollidable* island = new ICollidable(
+            {pos.x, pos.y},
+            {1.0f, 1.0f},
+            "./sprites/island.bmp",
+            renderer,
+            true,
+            LAYER_ENVIRONMENT
+        );
+        environment.push_back(island);
+        ++placedSmall;
+        // If we've reached the per-chunk cap, stop placing more small islands
+        if (placedSmall >= MAX_SMALL_ISLANDS_PER_CHUNK) {
+            SDL_Log("Reached max small islands (%d) for this area (seed=%u); skipping remaining candidates.", MAX_SMALL_ISLANDS_PER_CHUNK, seed);
+            // mark occupancy for this island before breaking to keep spacing consistent
+            for (int oy = -MIN_ISLAND_GAP_TILES; oy <= MIN_ISLAND_GAP_TILES; ++oy) {
+                for (int ox = -MIN_ISLAND_GAP_TILES; ox <= MIN_ISLAND_GAP_TILES; ++ox) {
+                    int nx = tx + ox;
+                    int ny = ty + oy;
+                    if (nx < 0 || nx >= areaTilesX || ny < 0 || ny >= areaTilesY) continue;
+                    occupancy[ny * areaTilesX + nx] = 1;
+                }
+            }
+            break;
+        }
+
+        for (int oy = -MIN_ISLAND_GAP_TILES; oy <= MIN_ISLAND_GAP_TILES; ++oy) {
+            for (int ox = -MIN_ISLAND_GAP_TILES; ox <= MIN_ISLAND_GAP_TILES; ++ox) {
+                int nx = tx + ox;
+                int ny = ty + oy;
+                if (nx < 0 || nx >= areaTilesX || ny < 0 || ny >= areaTilesY) continue;
+                occupancy[ny * areaTilesX + nx] = 1;
+            }
+        }
+    }
+
+    SDL_Log("Placed %d small islands (candidates %zu) in area [%.1f,%.1f]-[%.1f,%.1f] (seed=%u)", placedSmall, candidates.size(), area.begin.x, area.begin.y, area.end.x, area.end.y, seed);
+
+
+    // Finally add the big island (if any) so it renders on top of tiles and small islands
+    if (hasBigIsland) {
+        ICollidable* bigIsland = new ICollidable(
+            {bigPx, bigPy},
+            {static_cast<float>(bigTilesWide), static_cast<float>(bigTilesHigh)},
+            "./sprites/island.bmp",
+            renderer,
+            true, // detailed collider for a larger island
+            LAYER_ENVIRONMENT
+        );
+        environment.push_back(bigIsland);
+        SDL_Log("Chunk%s large island at (%.1f,%.1f) size (%dx%d) in area [%.1f,%.1f]-[%.1f,%.1f]",
+                seed != 0 ? " seed" : " random", bigPx, bigPy, bigTilesWide, bigTilesHigh, area.begin.x, area.begin.y, area.end.x, area.end.y);
+    }
+
+    return environment;
+}
 
 Player* getOrCreateRemotePlayer(uint32_t id) {
     if (remotePlayers.find(id) != remotePlayers.end()) {
@@ -905,7 +1145,7 @@ int main(int argc, char* argv[]) {
                                {(nx+1) * static_cast<float>(CHUNK_SIZE_PX), (ny+1) * static_cast<float>(CHUNK_SIZE_PX)}};
                 // Deterministic per-chunk seed
                 uint32_t seed = static_cast<uint32_t>((nx * 73856093) ^ (ny * 19349663) ^ 0x9E3779B9);
-                auto env = GameObject::generateInitialEnvironment(rend, "./tilesets/tilemap.json", "./tilesets/World_GenAtlas.bmp", area, seed);
+                auto env = generateInitialEnvironment(rend, area, seed);
                 // Append to global render list
                 gameObjects.insert(gameObjects.end(), env.begin(), env.end());
                 generatedChunks.insert(key);
@@ -1345,7 +1585,7 @@ int main(int argc, char* argv[]) {
                         if (generatedChunks.find(key) == generatedChunks.end()) {
                             Rectangle area{{cp.cx * static_cast<float>(CHUNK_SIZE_PX), cp.cy * static_cast<float>(CHUNK_SIZE_PX)},
                                            {(cp.cx+1) * static_cast<float>(CHUNK_SIZE_PX), (cp.cy+1) * static_cast<float>(CHUNK_SIZE_PX)}};
-                            auto env = GameObject::generateInitialEnvironment(renderer, "./tilesets/tilemap.json", "./tilesets/World_GenAtlas.bmp", area, cp.seed);
+                            auto env = generateInitialEnvironment(renderer, area, cp.seed);
                             gameObjects.insert(gameObjects.end(), env.begin(), env.end());
                             generatedChunks.insert(key);
                         }
