@@ -509,6 +509,8 @@ Player* getOrCreateRemotePlayer(uint32_t id) {
     };
     Player* remote = new Player({0.0f, 0.0f}, {2.0f, 2.0f}, remoteSprites, 4, g_renderer, 0.1f, LAYER_PLAYER);
     remote->setRemote(true); // mark this as a remote-controlled player so it doesn't play local sounds
+    // Start remote players with no equipment so clients don't show host holding tools by default
+    remote->equip(Player::EQUIP_NONE);
     remotePlayers[id] = remote;
     gameObjects.push_back(remote); // Add player
     if (remote->getFishingProjectile()) {
@@ -555,7 +557,6 @@ void sendInputPacket() {
     clientHookToggle = false; // Reset after sending
 
     // Equipment request (set when client selects from wheel)
-    static uint8_t clientEquipRequest = 0;
     uint8_t equipAction = clientEquipRequest;
     clientEquipRequest = 0; // reset
 
@@ -712,13 +713,15 @@ void receiveInputs() {
                     if (remote->getEquipment() != Player::EQUIP_HARPOON) remote->equipHarpoon();
                     if (remote->getGun() && remote->getGun()->getProjectile()) {
                         Vector2 target = { static_cast<float>(pkt.weaponTargetX), static_cast<float>(pkt.weaponTargetY) };
-                        // Ensure projectile is part of world updates
                         Projectile* rp = remote->getGun()->getProjectile();
-                        if (std::find(gameObjects.begin(), gameObjects.end(), rp) == gameObjects.end()) {
-                            gameObjects.push_back(rp);
+                        // Attempt to fire; only add projectile to world updates if shot succeeds
+                        bool fired = remote->getGun()->fireAt(target);
+                        if (fired) {
+                            if (std::find(gameObjects.begin(), gameObjects.end(), rp) == gameObjects.end()) {
+                                gameObjects.push_back(rp);
+                            }
+                            SDL_Log("Host: Fired harpoon for client %u toward (%.2f, %.2f)", pkt.clientId, target.x, target.y);
                         }
-                        remote->getGun()->fireAt(target);
-                        SDL_Log("Host: Fired harpoon for client %u toward (%.2f, %.2f)", pkt.clientId, target.x, target.y);
                     }
                 }
 
@@ -1197,6 +1200,8 @@ int main(int argc, char* argv[]) {
     };
 
     player = new Player({0.0f, 0.0f},{2.0f,2.0f}, playerSpritePaths,4, renderer,0.1f,LAYER_PLAYER);
+    // Start local player with no equipment by default
+    player->equip(Player::EQUIP_NONE);
     // If running as host, broadcast hook arrival when our local hook arrives
     if (isHost && player->getFishingProjectile()) {
         player->getFishingProjectile()->setOnHookArrival([](const Vector2& pos){
@@ -1891,6 +1896,7 @@ int main(int argc, char* argv[]) {
                                 // Sync equipment
                                 if (states[i].equipment == Player::EQUIP_HARPOON) remote->equipHarpoon();
                                 else if (states[i].equipment == Player::EQUIP_ROD) remote->equipRod();
+                                else remote->equip(Player::EQUIP_NONE);
 
                                 // Sync fishing hook for remote player only (after applying boarding/position)
                                 if (remote->getFishingProjectile()) {

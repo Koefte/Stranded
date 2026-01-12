@@ -31,6 +31,10 @@ public:
         }
         velocity.x = dir.x * speed;
         velocity.y = dir.y * speed;
+        // Set rotation so the projectile points toward its direction (convert radians to degrees)
+        float angleRad = std::atan2(dir.y, dir.x);
+        float angleDeg = angleRad * 180.0f / 3.14159265f;
+        setRotation(angleDeg);
         active = true;
         setVisible(true);
         life = 3.0f;
@@ -50,6 +54,10 @@ public:
         if (len > 0.001f) { dir.x /= len; dir.y /= len; }
         velocity.x = dir.x * speed;
         velocity.y = dir.y * speed;
+        // Also set rotation when restoring state
+        float angleRad = std::atan2(dir.y, dir.x);
+        float angleDeg = angleRad * 180.0f / 3.14159265f;
+        setRotation(angleDeg);
         active = act;
         setVisible(act);
         life = 3.0f;

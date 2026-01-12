@@ -62,7 +62,7 @@ public:
         fishingHook = new FishingHook({0.0f, 0.0f}, {2.0f, 2.0f}, "./sprites/Hook.bmp", renderer, zIndex + 2);
 
         // Create harpoon gun as a child (hidden by default)
-        gun = new Gun({-4.0f, 8.0f}, {1.0f,1.0f}, "./sprites/gun.bmp", renderer, zIndex + 1);
+        gun = new Gun({-7.0f, 8.0f}, {1.0f,1.0f}, "./sprites/gun.bmp", renderer, zIndex + 1);
         addChild(gun);
         gun->hide();
     }
@@ -179,12 +179,15 @@ public:
             };
             Projectile* proj = gun->getProjectile();
             if (proj) {
-                // Ensure projectile is part of global updates
-                if (std::find(gameObjects.begin(), gameObjects.end(), proj) == gameObjects.end()) {
-                    gameObjects.push_back(proj);
+                // Attempt to fire; gun->fireAt returns true only if cooldown allowed
+                bool fired = gun->fireAt(worldMousePos);
+                if (fired) {
+                    // Ensure projectile is part of global updates
+                    if (std::find(gameObjects.begin(), gameObjects.end(), proj) == gameObjects.end()) {
+                        gameObjects.push_back(proj);
+                    }
+                    SoundManager::instance().playSound("shoot", 0, MIX_MAX_VOLUME);
                 }
-                gun->fireAt(worldMousePos);
-                SoundManager::instance().playSound("shoot", 0, MIX_MAX_VOLUME);
             }
             return; // consume click
         }
@@ -241,6 +244,9 @@ public:
         
         Vector2* pos = getPosition();
         prevPosition = *pos;  // Save before movement
+
+        // Update child-only objects that need per-frame logic (e.g., gun cooldown)
+        if (gun) gun->update(dt);
 
         float dx = 0.0f;
         float dy = 0.0f;
