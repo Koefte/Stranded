@@ -23,6 +23,7 @@
 #include "../audio/SoundManager.hpp"
 #include <SDL_ttf.h>
 #include "Text.hpp"
+#include "Lighthouse.hpp"
 
 // Track whether TTF was successfully initialized
 static bool ttfInitialized = false;
@@ -1193,14 +1194,11 @@ int main(int argc, char* argv[]) {
     Vector2 lighthousePos = {600.0f, 200.0f};
     Vector2 lighthouseSizeMultiplier = {6.0f, 6.0f};
 
-    ICollidable* lighthouse = new ICollidable(
+    Lighthouse* lighthouse = new Lighthouse(
         lighthousePos,
         lighthouseSizeMultiplier,
-        "./sprites/lighthouse_tower.bmp",
         renderer,
-        true,
-        LAYER_LIGHTHOUSE,
-        10  // Smaller minClusterSize for more detailed hitboxes
+        LAYER_LIGHTHOUSE
     );
 
     GameObject* lighthouseGround = new GameObject(
@@ -1462,10 +1460,9 @@ int main(int argc, char* argv[]) {
                 for(GameObject* obj: gameObjects){
                     if(IInteractable* interactable = dynamic_cast<IInteractable*>(obj)){
                         if(interactable->getInteractKeys().find(event.key.keysym.sym) != interactable->getInteractKeys().end()){
+
                             // Check if this key wasn't already pressed (prevent key repeat)
                             if(pressedInteractKeys.find(event.key.keysym.sym) == pressedInteractKeys.end()){
-                                pressedInteractKeys.insert(event.key.keysym.sym);
-                                
                                 // Check if the interactable is also collidable
                                 ICollidable* interactableCollider = dynamic_cast<ICollidable*>(interactable);
                                 ICollidable* playerCollider = dynamic_cast<ICollidable*>(player);
@@ -1473,8 +1470,16 @@ int main(int argc, char* argv[]) {
                                 if(interactableCollider && playerCollider){
                                     auto shapeA = interactableCollider->getCollisionBox();
                                     auto shapeB = playerCollider->getCollisionBox();
-                                    
-                                    if (hitBoxDistance(shapeA, shapeB) < 10.0f) { // Simple distance check for proximity
+
+                                    // Compute distance and positions for proximity test
+                                    float dist = hitBoxDistance(shapeA, shapeB);
+                                    Vector2 ppos = player->getWorldPosition();
+                                    Vector2 opos = interactable->getWorldPosition();
+
+                                    if (dist < 10.0f) { // Simple distance check for proximity
+                                        // Mark the key as pressed now that we're handling an interaction
+                                        pressedInteractKeys.insert(event.key.keysym.sym);
+
                                         // Handle B key for boarding/leaving boat
                                         if(event.key.keysym.sym == SDLK_b){
                                             if (isHost) {
@@ -1488,7 +1493,7 @@ int main(int argc, char* argv[]) {
                                                 // Client sends request to server
                                                 clientBoardingRequest = true;
                                             }
-                                        } else if(event.key.keysym.sym == SDLK_e){
+                                        } else if(event.key.keysym.sym == SDLK_e && dynamic_cast<Boat*>(interactable)){
                                             // Handle E key for boat movement
                                             if (isHost) {
                                                 interactable->onInteract(event.key.keysym.sym);
@@ -1497,6 +1502,7 @@ int main(int argc, char* argv[]) {
                                                 clientBoatMovementToggle = true;
                                             }
                                         } else {
+                                            SDL_Log("Interacting with object using key: %s", SDL_GetKeyName(event.key.keysym.sym));
                                             interactable->onInteract(event.key.keysym.sym);
                                         }
                                     }
