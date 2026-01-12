@@ -41,6 +41,15 @@ static bool navigationUIActive = false;
 static SDL_Texture* navigationClockTexture = nullptr;
 static SDL_Texture* navigationIndicatorTexture = nullptr;
 
+// Equipment wheel UI state
+static bool equipmentWheelOpen = false;
+static int equipmentWheelCenterX = 0;
+static int equipmentWheelCenterY = 0;
+static int equipmentWheelRadius = 96;
+static int equipmentWheelSelected = -1; // 0=rod, 1=harpoon
+static Text* equipmentLabelRod = nullptr;
+static Text* equipmentLabelHarpoon = nullptr;
+
 
 // CHUNK GENERATION
     static bool envCacheInit = false;
@@ -1491,10 +1500,33 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
-                // Handle mouse click for fishing hook casting
-                if (!navigationUIActive) {
-                    player->onMouseDown(event.button.button, event.button.x, event.button.y, 
-                                       camera->getPosition(), camera->getZoom());
+                // Handle equipment wheel clicks first (consume)
+                if (equipmentWheelOpen) {
+                    if (event.button.button == SDL_BUTTON_LEFT) {
+                        int mx = event.button.x;
+                        int my = event.button.y;
+                        // Simple left/right selection based on click side
+                        int sel = (mx < equipmentWheelCenterX) ? 0 : 1;
+                        equipmentWheelSelected = sel;
+                        if (sel == 0) {
+                            SDL_Log("Equipment wheel: Rod selected");
+                            player->equipRod();
+                        } else {
+                            SDL_Log("Equipment wheel: Harpoon selected (placeholder)");
+                            player->equipHarpoon();
+                        }
+                        equipmentWheelOpen = false; 
+                    } else if (event.button.button == SDL_BUTTON_RIGHT) {
+                        // Cancel with right click
+                        equipmentWheelOpen = false;
+                    }
+                    // Consume click
+                } else {
+                    // Handle mouse click for fishing hook casting
+                    if (!navigationUIActive) {
+                        player->onMouseDown(event.button.button, event.button.x, event.button.y, 
+                                           camera->getPosition(), camera->getZoom());
+                    }
                 }
             }
             else if(event.type == SDL_KEYDOWN){
@@ -1571,22 +1603,23 @@ int main(int argc, char* argv[]) {
                     }
                 }
                 
-                // Only pass key to player if navigation UI is not active
-                if(!navigationUIActive){
-                    // Handle hook toggle separately for networking
-                    if (event.key.keysym.sym == SDLK_r) {
-                        if (isHost) {
-                            // Host handles it directly
-                            player->onKeyDown(event.key.keysym.sym);
+                // Only pass key to player if navigation UI/inventory/equipment wheel are not active
+                if (event.key.keysym.sym == SDLK_r) {
+                    // Ignore repeated keydown events to prevent flicker when holding R
+                    if (event.key.repeat == 0) {
+                        // Toggle the equipment wheel overlay
+                        equipmentWheelOpen = !equipmentWheelOpen;
+                        if (equipmentWheelOpen) {
+                            equipmentWheelCenterX = WIN_WIDTH / 2;
+                            equipmentWheelCenterY = WIN_HEIGHT / 2;
+                            equipmentWheelSelected = -1;
+                            SDL_Log("Equipment wheel opened");
                         } else {
-                            // Client sends request to server
-                            clientHookToggle = true;
-                            // Also apply locally for immediate feedback
-                            player->onKeyDown(event.key.keysym.sym);
+                            SDL_Log("Equipment wheel closed");
                         }
-                    } else {
-                        player->onKeyDown(event.key.keysym.sym);
                     }
+                } else if(!navigationUIActive && !inventoryOpen && !equipmentWheelOpen){
+                    player->onKeyDown(event.key.keysym.sym);
                 }
                 
             }
@@ -1597,8 +1630,8 @@ int main(int argc, char* argv[]) {
                 if(event.key.keysym.sym == SDLK_TAB) {
                     inventoryOpen = false;
                 }
-                // Only pass key to player if navigation UI is not active
-                if(!navigationUIActive){
+                // Only pass key up to player if navigation UI and equipment wheel are not active
+                if(!navigationUIActive && !equipmentWheelOpen){
                     player->onKeyUp(event.key.keysym.sym);
                 }
             }
@@ -2253,6 +2286,62 @@ int main(int argc, char* argv[]) {
                 SDL_SetRenderDrawColor(renderer, 60, 160, 220, 220);
                 SDL_RenderFillRect(renderer, &prog);
             }
+        }
+
+        // Draw equipment wheel overlay if open
+        if (equipmentWheelOpen) {
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 180);
+            SDL_Rect screenRect = {0, 0, WIN_WIDTH, WIN_HEIGHT};
+            SDL_RenderFillRect(renderer, &screenRect);
+
+            int cx = equipmentWheelCenterX ? equipmentWheelCenterX : WIN_WIDTH / 2;
+            int cy = equipmentWheelCenterY ? equipmentWheelCenterY : WIN_HEIGHT / 2;
+            int btnSize = 96;
+            int spacing = 16;
+            SDL_Rect leftBtn = { cx - btnSize - spacing/2, cy - btnSize/2, btnSize, btnSize };
+            SDL_Rect rightBtn = { cx + spacing/2, cy - btnSize/2, btnSize, btnSize };
+
+            // Determine hover based on current mouse position
+            int mx, my;
+            SDL_GetMouseState(&mx, &my);
+            equipmentWheelSelected = (mx < cx) ? 0 : 1;
+
+            // Draw left (Rod)
+            if (equipmentWheelSelected == 0) SDL_SetRenderDrawColor(renderer, 60, 160, 60, 220);
+            else SDL_SetRenderDrawColor(renderer, 80, 80, 80, 220);
+            SDL_RenderFillRect(renderer, &leftBtn);
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+            SDL_RenderDrawRect(renderer, &leftBtn);
+
+            // Draw right (Harpoon)
+            if (equipmentWheelSelected == 1) SDL_SetRenderDrawColor(renderer, 60, 160, 60, 220);
+            else SDL_SetRenderDrawColor(renderer, 80, 80, 80, 220);
+            SDL_RenderFillRect(renderer, &rightBtn);
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+            SDL_RenderDrawRect(renderer, &rightBtn);
+
+            // Draw labels using Text objects (cached)
+            if (!equipmentLabelRod) equipmentLabelRod = new Text({static_cast<float>(leftBtn.x + 8), static_cast<float>(leftBtn.y + btnSize + 8)}, "Rod", "./fonts/font.ttf", 18, renderer, SDL_Color{255,255,255,255}, LAYER_UI);
+            else {
+                Vector2* p = equipmentLabelRod->getPosition(); p->x = static_cast<float>(leftBtn.x + 8); p->y = static_cast<float>(leftBtn.y + btnSize + 8);
+            }
+            if (!equipmentLabelHarpoon) equipmentLabelHarpoon = new Text({static_cast<float>(rightBtn.x + 8), static_cast<float>(rightBtn.y + btnSize + 8)}, "Harpoon", "./fonts/font.ttf", 18, renderer, SDL_Color{255,255,255,255}, LAYER_UI);
+            else {
+                Vector2* p = equipmentLabelHarpoon->getPosition(); p->x = static_cast<float>(rightBtn.x + 8); p->y = static_cast<float>(rightBtn.y + btnSize + 8);
+            }
+
+            if (equipmentLabelRod && equipmentLabelRod->getSprite()) {
+                SDL_Texture* t = equipmentLabelRod->getSprite(); Vector2* tpos = equipmentLabelRod->getPosition(); Vector2* tsz = equipmentLabelRod->getSize(); SDL_Rect td = { static_cast<int>(tpos->x), static_cast<int>(tpos->y), static_cast<int>(tsz->x), static_cast<int>(tsz->y) }; SDL_RenderCopy(renderer, t, nullptr, &td);
+            }
+            if (equipmentLabelHarpoon && equipmentLabelHarpoon->getSprite()) {
+                SDL_Texture* t = equipmentLabelHarpoon->getSprite(); Vector2* tpos = equipmentLabelHarpoon->getPosition(); Vector2* tsz = equipmentLabelHarpoon->getSize(); SDL_Rect td = { static_cast<int>(tpos->x), static_cast<int>(tpos->y), static_cast<int>(tsz->x), static_cast<int>(tsz->y) }; SDL_RenderCopy(renderer, t, nullptr, &td);
+            }
+
+            // Small instruction text
+            Text* hint = new Text({static_cast<float>(cx - 80), static_cast<float>(cy + btnSize + 36)}, "Click side to equip · Right-click to cancel", "./fonts/font.ttf", 14, renderer, SDL_Color{200,200,200,200}, LAYER_UI);
+            if (hint && hint->getSprite()) { SDL_Texture* t = hint->getSprite(); Vector2* tpos = hint->getPosition(); Vector2* tsz = hint->getSize(); SDL_Rect td = { static_cast<int>(tpos->x), static_cast<int>(tpos->y), static_cast<int>(tsz->x), static_cast<int>(tsz->y) }; SDL_RenderCopy(renderer, t, nullptr, &td); }
+            delete hint; // transient
         }
 
         // Present the final frame once

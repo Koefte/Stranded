@@ -23,10 +23,14 @@ private:
     SDL_Renderer* renderer;
     Rod* rod = nullptr;
     FishingHook* fishingHook = nullptr;
+
+    // Player equipment enum (public API via equip/getEquipment)
+    
     bool walkingSoundPlaying = false;
     bool isRemote = false; // when true, this player should not play local-only sounds like walking
-
+    
 public:
+    enum Equipment {EQUIP_NONE = 0, EQUIP_ROD = 1, EQUIP_HARPOON = 2};
    
 
     // Construct from individual frame paths
@@ -64,6 +68,31 @@ public:
     // Mark this player as remote-controlled (do not play local-only sounds)
     void setRemote(bool remote) { isRemote = remote; }
 
+    // Equipment API - equip selected tool; harpoon behavior is left as a placeholder
+    // (enum is declared above so external code can reference Player::EQUIP_ROD / Player::EQUIP_HARPOON)
+    Equipment currentEquipment = EQUIP_ROD;
+
+    void equip(Equipment e) {
+        currentEquipment = e;
+        if (e == EQUIP_ROD) {
+            if (rod) rod->show();
+            SDL_Log("Player: equipped Rod");
+        } else if (e == EQUIP_HARPOON) {
+            if (rod) rod->hide();
+            SDL_Log("Player: equipped Harpoon (placeholder)");
+            // Placeholder hook for harpoon setup - user can extend behavior here
+        } else {
+            if (rod) rod->hide();
+            SDL_Log("Player: equipped None");
+        }
+    }
+
+    Equipment getEquipment() const { return currentEquipment; }
+
+    // Convenience helpers so external code doesn't need to access enum constants directly
+    void equipRod() { equip(EQUIP_ROD); }
+    void equipHarpoon() { equip(EQUIP_HARPOON); }
+
     ~Player() {
         if (rod) {
             removeChild(rod);
@@ -94,16 +123,6 @@ public:
             case SDLK_s: moveDown = true; break;
             case SDLK_a: moveLeft = true; break;
             case SDLK_d: moveRight = true; break;
-            case SDLK_r: {
-                if (rod) {
-                    if (rod->getVisible()) {
-                        rod->hide();
-                    } else {
-                        rod->show();
-                    }
-                }
-                break;
-            }
             default: break;
         }
     }
