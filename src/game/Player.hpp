@@ -34,9 +34,26 @@ private:
     
     bool walkingSoundPlaying = false;
     bool isRemote = false; // when true, this player should not play local-only sounds like walking
+
+    // Health
+    float maxHp = 100.0f;
+    float hp = 100.0f;
     
 public:
     enum Equipment {EQUIP_NONE = 0, EQUIP_ROD = 1, EQUIP_HARPOON = 2};
+
+    // Health accessors
+    float getMaxHp() const { return maxHp; }
+    float getHp() const { return hp; }
+    void setMaxHp(float m) { maxHp = m; if (hp > maxHp) hp = maxHp; }
+    void setHp(float h) { hp = std::max(0.0f, std::min(h, maxHp)); }
+
+    // Apply damage (clamped). Returns true if player died.
+    bool hurt(float amount) {
+        if (amount <= 0.0f) return false;
+        hp = std::max(0.0f, hp - amount);
+        return hp <= 0.0f;
+    }
    
 
     // Construct from individual frame paths
@@ -57,6 +74,9 @@ public:
         rod = new Rod({-7.0f, 12.0f}, {2.0f, 2.0f}, "./sprites/Rod.bmp", renderer, zIndex + 1);
         addChild(rod);
         rod->hide();
+        // Initialize health
+        maxHp = 100.0f;
+        hp = maxHp;
         
         // Create fishing Rod projectile (not a child, moves independently)
         fishingHook = new FishingHook({0.0f, 0.0f}, {2.0f, 2.0f}, "./sprites/Hook.bmp", renderer, zIndex + 2);

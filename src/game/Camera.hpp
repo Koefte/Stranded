@@ -7,6 +7,12 @@
 #include "GameObject.hpp"
 #include <algorithm>
 #include "UIGameObject.hpp"
+#include "Player.hpp"
+#include <unordered_map>
+
+// Externs from main.cpp used to draw healthbars
+extern Player* player;
+extern std::unordered_map<uint32_t, Player*> remotePlayers;
 
 
 class Camera{
@@ -104,6 +110,32 @@ class Camera{
             }else{
                 renderObject(renderer, obj);
             }
+        }
+
+        // Draw player health bars on top of the scene
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+        auto drawHealthBar = [&](Player* p) {
+            if (!p) return;
+            Vector2 center = p->getCenteredPosition();
+            int barW = static_cast<int>(40 * zoomLevel);
+            int barH = static_cast<int>(6 * zoomLevel);
+            int sx = static_cast<int>((center.x - position.x) * zoomLevel) - barW / 2;
+            // Raise healthbar a bit above the player
+            int sy = static_cast<int>((center.y - position.y) * zoomLevel) - static_cast<int>(18 * zoomLevel) - barH;
+            float pct = (p->getMaxHp() > 0.0f) ? (p->getHp() / p->getMaxHp()) : 0.0f;
+            // Background
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 200);
+            SDL_Rect bg{ sx, sy, barW, barH };
+            SDL_RenderFillRect(renderer, &bg);
+            // Foreground (health)
+            SDL_SetRenderDrawColor(renderer, 200, 40, 40, 255);
+            SDL_Rect fg{ sx + 1, sy + 1, std::max(0, static_cast<int>((barW - 2) * pct)), std::max(0, barH - 2) };
+            SDL_RenderFillRect(renderer, &fg);
+        };
+
+        if (player) drawHealthBar(player);
+        for (auto& kv : remotePlayers) {
+            if (kv.second) drawHealthBar(kv.second);
         }
 
         // Additional rendering logic can be added here

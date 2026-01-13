@@ -50,6 +50,31 @@ public:
         }
         p->x += velocity.x * dt;
         p->y += velocity.y * dt;
+
+        // Proximity check to avoid tunneling: if the projectile gets very close to the target
+        // but missed collision due to large dt, apply the collision behavior manually.
+        if (target && active) {
+            Vector2 tp = target->getCenteredPosition();
+            float dx2 = tp.x - p->x;
+            float dy2 = tp.y - p->y;
+            float dist2 = dx2*dx2 + dy2*dy2;
+            // Base hit radius (pixels). Scale conservatively to avoid false positives.
+            float hitRadius = 12.0f;
+            // Allow projectile size to influence radius (use half-diagonal roughly)
+            Vector2* sz = getSize();
+            float sizeInfluence = std::sqrt((sz->x*sz->x + sz->y*sz->y)) * 0.25f;
+            hitRadius = std::max(hitRadius, sizeInfluence);
+            if (dist2 <= hitRadius * hitRadius) {
+                // Simulate collision with the target
+                ICollidable* coll = dynamic_cast<ICollidable*>(target);
+                if (coll) {
+                    onCollisionEnter(coll);
+                }
+                // Ensure we don't continue updating a now-deactivated projectile
+                if (!active) return;
+            }
+        }
+
         life -= dt;
         if (life <= 0.0f) {
             active = false;

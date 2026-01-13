@@ -301,6 +301,10 @@ struct PlayerState {
     uint8_t projectileActive; // 0 = not active, 1 = active
     float projectileX, projectileY; // world position of projectile
     float projectileTargetX, projectileTargetY; // projectile destination
+
+    // Health
+    float hp;
+    float maxHp;
 };
 
 struct SnapshotHeader {
@@ -594,7 +598,19 @@ void onHurt(Player* p) {
     SDL_Log("Player hurt by attacking fish projectile!");
     // Play hurt sound if available
     SoundManager::instance().playSound("hurt", 0, MIX_MAX_VOLUME);
-    // Placeholder: you can add health loss or visual feedback here
+    // Only the authoritative host should apply health changes. Clients will receive updated HP via snapshots.
+    if (isHost || udpSocket == nullptr) {
+        // Apply a fixed damage amount for now (tweak as needed)
+        constexpr float DAMAGE = 20.0f;
+        bool died = p->hurt(DAMAGE);
+        SDL_Log("Player HP now %.1f/%.1f", p->getHp(), p->getMaxHp());
+        if (died) {
+            SDL_Log("Player died");
+            // You can implement respawn or death effects here
+        }
+    } else {
+        // Non-host clients don't autoritatively apply damage. Host will broadcast HP in the next snapshot.
+    }
 }
 
 // Helper: return client id for a Player pointer (0 = host, other values = remote client ids, 0xFFFFFFFF = unknown)
@@ -1280,7 +1296,7 @@ void broadcastSnapshot() {
         }
     }
 
-    states.push_back({0, pos.x, pos.y, vel.x, vel.y, 0, onBoat, hooking, fishingHookActive, fishingHookX, fishingHookY, fishingHookTargetX, fishingHookTargetY, equipment, projectileActive, projectileX, projectileY, projectileTargetX, projectileTargetY});
+    states.push_back({0, pos.x, pos.y, vel.x, vel.y, 0, onBoat, hooking, fishingHookActive, fishingHookX, fishingHookY, fishingHookTargetX, fishingHookTargetY, equipment, projectileActive, projectileX, projectileY, projectileTargetX, projectileTargetY, player->getHp(), player->getMaxHp()});
     
     // Add remote players
     for (auto& [id, p] : remotePlayers) {
@@ -1311,7 +1327,7 @@ void broadcastSnapshot() {
             }
         }
 
-        states.push_back({id, rpos.x, rpos.y, rvel.x, rvel.y, 0, rOnBoat, rHooking, rFishingHookActive, rFishingHookX, rFishingHookY, rFishingHookTargetX, rFishingHookTargetY, rEquipment, rProjectileActive, rProjectileX, rProjectileY, rProjectileTargetX, rProjectileTargetY});
+        states.push_back({id, rpos.x, rpos.y, rvel.x, rvel.y, 0, rOnBoat, rHooking, rFishingHookActive, rFishingHookX, rFishingHookY, rFishingHookTargetX, rFishingHookTargetY, rEquipment, rProjectileActive, rProjectileX, rProjectileY, rProjectileTargetX, rProjectileTargetY, p->getHp(), p->getMaxHp()});
     }
     
     // Boat state
@@ -2205,7 +2221,10 @@ int main(int argc, char* argv[]) {
                                 
                                 player->setVelocity({states[i].vx, states[i].vy});
                                 player->setRodVisible(states[i].isHooking != 0);
-                                // Do NOT sync local player's fishing hook from network snapshot (client should control its own hook)
+                                // Sync health from authoritative host
+                                player->setHp(states[i].hp);
+                                player->setMaxHp(states[i].maxHp);
+                                // Do NOT sync local player's fishing hook from network snapshot (client should control its own hook) 
                             } else {
                                 Player* remote = getOrCreateRemotePlayer(states[i].id);
                                 if (!remote) continue;
@@ -2239,6 +2258,9 @@ int main(int argc, char* argv[]) {
                                 
                                 remote->setVelocity({states[i].vx, states[i].vy});
                                 remote->setRodVisible(states[i].isHooking != 0);
+                                // Sync health
+                                remote->setHp(states[i].hp);
+                                remote->setMaxHp(states[i].maxHp);
                                 // Sync equipment
                                 if (states[i].equipment == Player::EQUIP_HARPOON) remote->equipHarpoon();
                                 else if (states[i].equipment == Player::EQUIP_ROD) remote->equipRod();
