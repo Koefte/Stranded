@@ -21,31 +21,34 @@ extern uint32_t clientId;
 class AttackingFish : public ICollidable {
 private:
     SDL_Renderer* renderer = nullptr;
-    float throwTimer = 1.0f;
-    bool hasThrown = false;
+    float nextFireTimer = 2.0f; // time until next shot
+    int shotsRemaining = 10; // number of shots this fish can fire (can be tuned)
     uint32_t entityId = 0;
     uint32_t ownerPlayerId = 0; // player who triggered/spawned this fish
+    std::mt19937 rng{static_cast<uint32_t>(SDL_GetTicks())};
+    bool spriteChangedAfterFirstThrow = false;
 public:
     AttackingFish(const Vector2& pos, SDL_Renderer* renderer, uint32_t entityId = 0, uint32_t ownerId = 0, int zIndex = 4)
         : ICollidable(pos, {2.0f, 2.0f}, "./sprites/AttackingFish1.bmp", renderer, true, zIndex), renderer(renderer), entityId(entityId), ownerPlayerId(ownerId)
          ,GameObject(pos, {2.0f, 2.0f}, "./sprites/AttackingFish1.bmp", renderer, zIndex)
     {
-        // Randomize initial throw delay slightly
-        std::mt19937 rng(static_cast<uint32_t>(SDL_GetTicks()));
+        // Randomize initial fire delay slightly
         std::uniform_real_distribution<float> dist(0.5f, 1.8f);
-        throwTimer = dist(rng);
+        nextFireTimer = dist(rng);
+        // Default shots (tunable): allow the fish to fire a few times
+        shotsRemaining = 3;
         // Center the fish at the given world position so visual matches spawn location
         Vector2 sz = *getSize();
         setPosition({ pos.x - sz.x / 2.0f, pos.y - sz.y / 2.0f });
     }
 
     void update(float dt) override {
-        if (hasThrown) return;
-        throwTimer -= dt;
-        if (throwTimer <= 0.0f) {
+        if (shotsRemaining <= 0) return;
+        nextFireTimer -= dt;
+        if (nextFireTimer <= 0.0f && shotsRemaining > 0) {
             // Fire a chasing fish projectile at the global player if present
             extern Player* player; // declared in main.cpp
-        
+
             // Start projectile from the fish center (mouth)
             Vector2 start = { getWorldPosition().x + getSize()->x / 2.0f, getWorldPosition().y + getSize()->y / 2.0f };
             // Determine target player by ownerPlayerId
@@ -68,11 +71,24 @@ public:
                     uint32_t targetPid = getPlayerId(targetPlayer ? targetPlayer : player);
                     hostBroadcastFishProjectile(pid, entityId, targetPid, start.x, start.y);
                 }
-                SDL_Log("AttackingFish: host created projectile at (%.2f,%.2f) targetOwner=%u", start.x, start.y, ownerPlayerId);
-            }       
-            // Change sprite to indicate it has thrown
-            setSprite("./sprites/AttackingFish2.bmp", renderer);
-            hasThrown = true;
+                SDL_Log("AttackingFish: host created projectile at (%.2f,%.2f) targetOwner=%u shotsLeft=%d", start.x, start.y, ownerPlayerId, shotsRemaining - 1);
+            }
+
+            // Change sprite on the first throw
+            if (!spriteChangedAfterFirstThrow) {
+                setSprite("./sprites/AttackingFish2.bmp", renderer);
+                spriteChangedAfterFirstThrow = true;
+            }
+
+            // Consume a shot and schedule reload if any remain
+            shotsRemaining -= 1;
+            if (shotsRemaining > 0) {
+                std::uniform_real_distribution<float> dist(0.8f, 2.0f);
+                nextFireTimer = dist(rng);
+            } else {
+                // No more shots; stop firing. Could mark for deletion here if desired.
+                nextFireTimer = 0.0f;
+            }
         }
     }
 
