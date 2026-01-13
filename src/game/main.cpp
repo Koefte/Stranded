@@ -49,6 +49,8 @@ static int equipmentWheelRadius = 96;
 static int equipmentWheelSelected = -1; // 0=rod, 1=harpoon
 static Text* equipmentLabelRod = nullptr;
 static Text* equipmentLabelHarpoon = nullptr;
+static GameObject* equipmentIconRod = nullptr;
+static GameObject* equipmentIconHarpoon = nullptr;
 
 
 // CHUNK GENERATION
@@ -433,6 +435,14 @@ std::vector<GameObject*> generateInitialEnvironment(SDL_Renderer* renderer, Rect
         int tx = static_cast<int>((pos.x - area.begin.x) / envTileW);
         int ty = static_cast<int>((pos.y - area.begin.y) / envTileH);
         if (tx < 0 || tx >= areaTilesX || ty < 0 || ty >= areaTilesY) continue;
+
+        // Prevent islands in the spawn area (1000x1000 blocks centered at (0,0))
+        const int SPAWN_CLEAR_BLOCKS = 200;
+        const int SPAWN_HALF = SPAWN_CLEAR_BLOCKS / 2; // half-width in blocks
+        int worldTileX = static_cast<int>(std::floor(pos.x / envTileW));
+        int worldTileY = static_cast<int>(std::floor(pos.y / envTileH));
+        SDL_Log("world tile x=%d y=%d", worldTileX, worldTileY);
+        if (std::abs(worldTileX) < SPAWN_HALF && std::abs(worldTileY) < SPAWN_HALF) continue;
 
         // Respect an edge buffer so islands do not sit on the very edge of a chunk
         if (tx < EDGE_BUFFER_TILES || tx >= areaTilesX - EDGE_BUFFER_TILES) continue;
@@ -1224,7 +1234,7 @@ int main(int argc, char* argv[]) {
         "./sprites/Boat4.bmp"
     };
 
-    boat = new Boat({430.0f, 280.0f}, {3.0f, 3.0f}, boatSpritePaths, 4, renderer, 0.2f, LAYER_BOAT, std::set<SDL_Keycode>{SDLK_f,SDLK_e,SDLK_b}, &navigationUIActive);
+    boat = new Boat({-170.0f, 80.0f}, {3.0f, 3.0f}, boatSpritePaths, 4, renderer, 0.2f, LAYER_BOAT, std::set<SDL_Keycode>{SDLK_f,SDLK_e,SDLK_b}, &navigationUIActive);
    
 
 
@@ -1290,7 +1300,7 @@ int main(int argc, char* argv[]) {
     // Chunks added directly to gameObjects in ensureChunksAround
 
     
-    Vector2 lighthousePos = {600.0f, 200.0f};
+    Vector2 lighthousePos = {0.0f, 0.0f};
     Vector2 lighthouseSizeMultiplier = {6.0f, 6.0f};
 
     Lighthouse* lighthouse = new Lighthouse(
@@ -2452,6 +2462,40 @@ int main(int argc, char* argv[]) {
             if (!equipmentLabelHarpoon) equipmentLabelHarpoon = new Text({static_cast<float>(rightBtn.x + 8), static_cast<float>(rightBtn.y + btnSize + 8)}, "Harpoon", "./fonts/font.ttf", 18, renderer, SDL_Color{255,255,255,255}, LAYER_UI);
             else {
                 Vector2* p = equipmentLabelHarpoon->getPosition(); p->x = static_cast<float>(rightBtn.x + 8); p->y = static_cast<float>(rightBtn.y + btnSize + 8);
+            }
+
+            // Create or update small icons for rod / harpoon gun
+            if (!equipmentIconRod) {
+                equipmentIconRod = new GameObject({0.0f, 0.0f}, {4.0f, 4.0f}, "./sprites/Rod.bmp", renderer, LAYER_UI);
+            }
+            if (!equipmentIconHarpoon) {
+                equipmentIconHarpoon = new GameObject({0.0f, 0.0f}, {4.0f, 4.0f}, "./sprites/gun.bmp", renderer, LAYER_UI);
+            }
+
+            // Draw icons centered inside buttons with a small padding; scale down if needed
+            if (equipmentIconRod && equipmentIconRod->getSprite()) {
+                Vector2 tsz = *equipmentIconRod->getSize();
+                float maxDim = static_cast<float>(btnSize - 24);
+                float scale = 1.0f;
+                if (tsz.x > 0 && tsz.y > 0) scale = std::min(1.0f, std::min(maxDim / tsz.x, maxDim / tsz.y));
+                int drawW = static_cast<int>(tsz.x * scale);
+                int drawH = static_cast<int>(tsz.y * scale);
+                int drawX = leftBtn.x + (btnSize - drawW) / 2;
+                int drawY = leftBtn.y + (btnSize - drawH) / 2;
+                SDL_Rect td = { drawX, drawY, drawW, drawH };
+                SDL_RenderCopy(renderer, equipmentIconRod->getSprite(), nullptr, &td);
+            }
+            if (equipmentIconHarpoon && equipmentIconHarpoon->getSprite()) {
+                Vector2 tsz = *equipmentIconHarpoon->getSize();
+                float maxDim = static_cast<float>(btnSize - 24);
+                float scale = 1.0f;
+                if (tsz.x > 0 && tsz.y > 0) scale = std::min(1.0f, std::min(maxDim / tsz.x, maxDim / tsz.y));
+                int drawW = static_cast<int>(tsz.x * scale);
+                int drawH = static_cast<int>(tsz.y * scale);
+                int drawX = rightBtn.x + (btnSize - drawW) / 2;
+                int drawY = rightBtn.y + (btnSize - drawH) / 2;
+                SDL_Rect td = { drawX, drawY, drawW, drawH };
+                SDL_RenderCopy(renderer, equipmentIconHarpoon->getSprite(), nullptr, &td);
             }
 
             if (equipmentLabelRod && equipmentLabelRod->getSprite()) {
