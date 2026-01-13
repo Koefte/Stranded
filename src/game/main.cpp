@@ -209,6 +209,15 @@ struct AttackingFishSpawnPacket {
 };
 #pragma pack(pop)
 
+#pragma pack(push, 1)
+struct AttackingFishRequestPacket {
+    uint32_t magic; // 'AFRQ' client->host request
+    uint32_t ownerId; // requesting player's id
+    float x;
+    float y;
+};
+#pragma pack(pop)
+
 // Fish projectile spawn packet (host -> clients)
 #pragma pack(push, 1)
 struct FishProjectileSpawnPacket {
@@ -559,10 +568,14 @@ Player* getOrCreateRemotePlayer(uint32_t id) {
                 hostBroadcastHookArrival(id, pos);
             });
         }
-        // Spawn fish when attract arrival occurs for this remote player's hook
-        remote->getFishingProjectile()->setOnAttractArrival([remote](){
+        // When attract particles finish for a remote player's hook, the host should not start
+        // the local minigame/"getting fish" animation — instead broadcast the authoritative
+        // hook arrival to clients so the owning player handles the minigame locally.
+        remote->getFishingProjectile()->setOnAttractArrival([id, remote](){
             Vector2 p = remote->getFishingProjectile()->getWorldPosition();
-            onHook(p);
+            if (isHost && udpSocket && !clientAddrs.empty()) {
+                hostBroadcastHookArrival(id, p);
+            }
         });
     }
     std::cout << "Created remote player with ID: " << id << "\n";
@@ -718,6 +731,56 @@ void receiveInputs() {
     
     UDPpacket* in = SDLNet_AllocPacket(512);
     while (SDLNet_UDP_Recv(udpSocket, in)) {
+        // Check for AttackingFish request from client first
+        if (in->len >= sizeof(AttackingFishRequestPacket)) {
+            AttackingFishRequestPacket req;
+            std::memcpy(&req, in->data, sizeof(req));
+            if (req.magic == 0x51524641) { // 'AFRQ'
+                // Register client address if new
+                bool known = false;
+                for (auto& addr : clientAddrs) {
+                    if (addr.host == in->address.host && addr.port == in->address.port) {
+                        known = true;
+                        break;
+                    }
+                }
+                if (!known) {
+                    clientAddrs.push_back(in->address);
+                    SDL_Log("New client connected (via AFRQ): %u", req.ownerId);
+                }
+
+                // Create authoritative attacking fish and broadcast spawn to all clients
+                uint32_t eid = nextEntityId++;
+                Vector2 pos{req.x, req.y};
+                AttackingFish* af = new AttackingFish(pos, g_renderer, eid, req.ownerId);
+                gameObjects.push_back(af);
+                SDL_Log("Host: created AttackingFish for client request owner=%u at (%.2f,%.2f) eid=%u", req.ownerId, req.x, req.y, eid);
+
+                // Broadcast spawn packet
+                AttackingFishSpawnPacket pkt{};
+                pkt.magic = 0x50534641; // 'AFSP'
+                pkt.entityId = eid;
+                pkt.ownerId = req.ownerId;
+                pkt.x = req.x;
+                pkt.y = req.y;
+                UDPpacket* out = SDLNet_AllocPacket(sizeof(pkt));
+                std::memcpy(out->data, &pkt, sizeof(pkt));
+                out->len = sizeof(pkt);
+                for (auto& addr : clientAddrs) {
+                    out->address = addr;
+                    SDLNet_UDP_Send(udpSocket, -1, out);
+                }
+                SDLNet_FreePacket(out);
+
+                // Retract owner's hook on host and broadcast hook arrival so clients retract too
+                Player* ownerPlayer = getOrCreateRemotePlayer(req.ownerId);
+                if (ownerPlayer && ownerPlayer->getFishingProjectile()) ownerPlayer->getFishingProjectile()->retract();
+                hostBroadcastHookArrival(req.ownerId, pos);
+
+                continue; // processed
+            }
+        }
+
         if (in->len >= sizeof(InputPacket)) {
             InputPacket pkt;
             std::memcpy(&pkt, in->data, sizeof(pkt));
@@ -1003,6 +1066,27 @@ void onHook(const Vector2& pos) {
                             SDLNet_UDP_Send(udpSocket, -1, out);
                         }
                         SDLNet_FreePacket(out);
+                    }
+                } else {
+                    // Client: spawn a local AttackingFish immediately so the owner sees it without waiting for host packet
+                    AttackingFish* af = new AttackingFish(hookPos, g_renderer, 0, clientId);
+                    gameObjects.push_back(af);
+                    SDL_Log("Client: locally spawned AttackingFish at (%.2f,%.2f) owner=%u (pending authoritative spawn)", hookPos.x, hookPos.y, clientId);
+
+                    // Send request to host to create authoritative spawn (if using UDP networking)
+                    if (udpSocket) {
+                        AttackingFishRequestPacket req{};
+                        req.magic = 0x51524641; // 'AFRQ'
+                        req.ownerId = clientId;
+                        req.x = hookPos.x;
+                        req.y = hookPos.y;
+                        UDPpacket* outReq = SDLNet_AllocPacket(sizeof(req));
+                        std::memcpy(outReq->data, &req, sizeof(req));
+                        outReq->len = sizeof(req);
+                        outReq->address = hostAddr;
+                        SDLNet_UDP_Send(udpSocket, -1, outReq);
+                        SDLNet_FreePacket(outReq);
+                        SDL_Log("Client: sent AttackingFish request to host for owner=%u at (%.2f,%.2f)", clientId, hookPos.x, hookPos.y);
                     }
                 }
                 player->getFishingProjectile()->retract(); // retract rod immediately
@@ -1993,15 +2077,34 @@ int main(int argc, char* argv[]) {
                     AttackingFishSpawnPacket ap;
                     std::memcpy(&ap, in->data, sizeof(AttackingFishSpawnPacket));
                     if (ap.magic == 0x50534641) { // 'AFSP'
-                        // Spawn the attacking fish locally with the provided entity id
                         Vector2 spawn{ap.x, ap.y};
-                        AttackingFish* af = new AttackingFish(spawn, g_renderer, ap.entityId);
-                        gameObjects.push_back(af);
-                        SDL_Log("Client: Received AttackingFish spawn eid=%u owner=%u at (%.2f,%.2f)", ap.entityId, ap.ownerId, ap.x, ap.y);
-                        // Spawn the attacking fish locally with the provided entity id and owner
-                        spawn = {ap.x, ap.y};
-                        af = new AttackingFish(spawn, g_renderer, ap.entityId, ap.ownerId);
-                        gameObjects.push_back(af);
+                        // If we already have a local AttackingFish near this position (e.g. client-spawned), adopt the authoritative ids
+                        bool adopted = false;
+                        for (GameObject* obj : gameObjects) {
+                            AttackingFish* afc = dynamic_cast<AttackingFish*>(obj);
+                            if (!afc) continue;
+                            Vector2 afPos = afc->getWorldPosition();
+                            float dx = afPos.x - ap.x;
+                            float dy = afPos.y - ap.y;
+                            if (dx*dx + dy*dy < 16.0f * 16.0f) {
+                                afc->adoptSpawn(ap.entityId, ap.ownerId);
+                                SDL_Log("Client: Adopted existing AttackingFish for eid=%u owner=%u at (%.2f,%.2f)", ap.entityId, ap.ownerId, ap.x, ap.y);
+                                adopted = true;
+                                break;
+                            }
+                        }
+                        if (!adopted) {
+                            AttackingFish* af = new AttackingFish(spawn, g_renderer, ap.entityId, ap.ownerId);
+                            gameObjects.push_back(af);
+                            SDL_Log("Client: Received AttackingFish spawn eid=%u owner=%u at (%.2f,%.2f)", ap.entityId, ap.ownerId, ap.x, ap.y);
+                        }
+
+                        // If this attacking fish was chosen by the host for our hook, cancel any local minigame and retract the hook
+                        if (ap.ownerId == clientId && fishingMinigameActive) {
+                            SDL_Log("Client: AttackingFish chosen by host for our hook; cancelling local minigame and retracting hook.");
+                            fishingMinigameActive = false;
+                            if (player && player->getFishingProjectile()) player->getFishingProjectile()->retract();
+                        }
                         continue; // processed
                     }
                 }

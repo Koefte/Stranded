@@ -79,4 +79,15 @@ public:
     void onCollisionEnter(ICollidable* other) override {
         // Default behavior: don't block (or you can choose to revert position)
     }
+
+    // Accessors for network reconciliation
+    uint32_t getEntityId() const { return entityId; }
+    uint32_t getOwnerPlayerId() const { return ownerPlayerId; }
+
+    // Adopt authoritative entity/owner ids when host assigns them
+    void adoptSpawn(uint32_t newEntityId, uint32_t newOwnerId) {
+        entityId = newEntityId;
+        ownerPlayerId = newOwnerId;
+        SDL_Log("AttackingFish: adopted eid=%u owner=%u", entityId, ownerPlayerId);
+    }
 };
