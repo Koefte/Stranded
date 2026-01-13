@@ -38,6 +38,17 @@ Player* player = nullptr;
 Boat* boat;
 SDL_Renderer* g_renderer = nullptr;
 static std::set<std::pair<int,int>> generatedChunks;
+
+// Day/night cycle globals (file scope)
+float g_dayTimeSeconds = 0.0f;
+float g_dayCycleDurationSeconds = 1200.0f; // seconds for a full day-night cycle
+float g_sunIntensity = 1.0f; // 0 = dark/night, 1 = bright/day
+
+// Lighthouse glow configuration (tweakable)
+float g_lighthouseGlowBaseRadius = 60.0f;           // base radius (px) when bright
+float g_lighthouseGlowExtraRadius = 120.0f;         // additional radius at full darkness
+float g_lighthouseGlowIntensityMultiplier = 24.0f;   // alpha multiplier at night
+
 static const int CHUNK_SIZE_PX = 512; // world-space pixels per chunk
 static bool navigationUIActive = false;
 static SDL_Texture* navigationClockTexture = nullptr;
@@ -227,6 +238,14 @@ struct FishProjectileSpawnPacket {
     uint32_t targetPlayerId; // 0 = host, others = client IDs
     float startX;
     float startY;
+};
+#pragma pack(pop)
+
+#pragma pack(push, 1)
+struct DaytimePacket {
+    uint32_t magic; // 'DAYT'
+    float dayTimeSeconds; // current time of day (seconds since cycle start)
+    float cycleDurationSeconds; // seconds per full day-night cycle
 };
 #pragma pack(pop)
 
@@ -763,6 +782,18 @@ void receiveInputs() {
                 if (!known) {
                     clientAddrs.push_back(in->address);
                     SDL_Log("New client connected (via AFRQ): %u", req.ownerId);
+
+                    // Send current day/night state to newly connected client
+                    DaytimePacket dpk{};
+                    dpk.magic = 0x54415944; // 'DAYT'
+                    dpk.dayTimeSeconds = std::fmod(g_dayTimeSeconds, g_dayCycleDurationSeconds);
+                    dpk.cycleDurationSeconds = g_dayCycleDurationSeconds;
+                    UDPpacket* dout = SDLNet_AllocPacket(sizeof(dpk));
+                    std::memcpy(dout->data, &dpk, sizeof(dpk));
+                    dout->len = sizeof(dpk);
+                    dout->address = in->address;
+                    SDLNet_UDP_Send(udpSocket, -1, dout);
+                    SDLNet_FreePacket(dout);
                 }
 
                 // Create authoritative attacking fish and broadcast spawn to all clients
@@ -812,6 +843,18 @@ void receiveInputs() {
             if (!known) {
                 clientAddrs.push_back(in->address);
                 std::cout << "New client connected: " << pkt.clientId << "\n";
+
+                // Send current day/night state to newly connected client
+                DaytimePacket dpk{};
+                dpk.magic = 0x54415944; // 'DAYT'
+                dpk.dayTimeSeconds = std::fmod(g_dayTimeSeconds, g_dayCycleDurationSeconds);
+                dpk.cycleDurationSeconds = g_dayCycleDurationSeconds;
+                UDPpacket* dout = SDLNet_AllocPacket(sizeof(dpk));
+                std::memcpy(dout->data, &dpk, sizeof(dpk));
+                dout->len = sizeof(dpk);
+                dout->address = in->address;
+                SDLNet_UDP_Send(udpSocket, -1, dout);
+                SDLNet_FreePacket(dout);
             }
             
             // Apply input to remote player
@@ -1641,6 +1684,13 @@ int main(int argc, char* argv[]) {
         double dt = (now - prev) / freq; // seconds since last frame
         prev = now;
 
+        // Update day/night cycle
+        g_dayTimeSeconds += static_cast<float>(dt);
+        float cyclePos = std::fmod(g_dayTimeSeconds / g_dayCycleDurationSeconds, 1.0f);
+        const float twoPi = 2.0f * 3.14159265f;
+        g_sunIntensity = 0.5f + 0.5f * std::cos(twoPi * cyclePos - 3.14159265f);
+
+
         // Update fishing minigame state (indicator movement and timeout) EARLY so input sees the visible indicator
         if (fishingMinigameActive) {
             if (!navigationUIActive && !inventoryOpen) {
@@ -2121,6 +2171,23 @@ int main(int argc, char* argv[]) {
                             fishingMinigameActive = false;
                             if (player && player->getFishingProjectile()) player->getFishingProjectile()->retract();
                         }
+                        continue; // processed
+                    }
+                }
+
+                // Check for daytime packet
+                if (in->len >= sizeof(DaytimePacket)) {
+                    DaytimePacket d;
+                    std::memcpy(&d, in->data, sizeof(DaytimePacket));
+                    if (d.magic == 0x54415944) { // 'DAYT'
+                        // Apply the host's day/time values; wrap dayTime into local cycle
+                        g_dayCycleDurationSeconds = d.cycleDurationSeconds > 0.1f ? d.cycleDurationSeconds : g_dayCycleDurationSeconds;
+                        g_dayTimeSeconds = std::fmod(d.dayTimeSeconds, g_dayCycleDurationSeconds);
+                        // Immediately compute sun intensity so there's no visual jump
+                        float cyclePos = std::fmod(g_dayTimeSeconds / g_dayCycleDurationSeconds, 1.0f);
+                        const float twoPi = 2.0f * 3.14159265f;
+                        g_sunIntensity = 0.5f + 0.5f * std::cos(twoPi * cyclePos - 3.14159265f);
+                        SDL_Log("Client: Received daytime sync: time=%.2f cycle=%.2f intensity=%.3f", g_dayTimeSeconds, g_dayCycleDurationSeconds, g_sunIntensity);
                         continue; // processed
                     }
                 }
@@ -2882,6 +2949,17 @@ int main(int argc, char* argv[]) {
             Text* hint = new Text({static_cast<float>(cx - 80), static_cast<float>(cy + btnSize + 36)}, "Click side to equip · Right-click to cancel", "./fonts/font.ttf", 14, renderer, SDL_Color{200,200,200,200}, LAYER_UI);
             if (hint && hint->getSprite()) { SDL_Texture* t = hint->getSprite(); Vector2* tpos = hint->getPosition(); Vector2* tsz = hint->getSize(); SDL_Rect td = { static_cast<int>(tpos->x), static_cast<int>(tpos->y), static_cast<int>(tsz->x), static_cast<int>(tsz->y) }; SDL_RenderCopy(renderer, t, nullptr, &td); }
             delete hint; // transient
+        }
+
+        // Apply global night overlay (darken everything based on sun intensity)
+        {
+            Uint8 nightAlpha = static_cast<Uint8>((1.0f - g_sunIntensity) * 220.0f);
+            if (nightAlpha > 2) {
+                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+                SDL_SetRenderDrawColor(renderer, 0, 0, 0, nightAlpha);
+                SDL_Rect screenRect = {0, 0, WIN_WIDTH, WIN_HEIGHT};
+                SDL_RenderFillRect(renderer, &screenRect);
+            }
         }
 
         // Present the final frame once
