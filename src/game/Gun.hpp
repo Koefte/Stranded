@@ -26,6 +26,10 @@ public:
 
     Projectile* getProjectile() const { return projectile; }
 
+    void setProjectile(Projectile* newProjectile) {
+        projectile = newProjectile;
+    }
+
     // Fire from the gun's tip toward world target. Returns true if a shot was fired.
     bool fireAt(const Vector2& worldTarget) {
         if (!projectile) return false;

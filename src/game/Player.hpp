@@ -99,7 +99,6 @@ public:
         } else {
             if (rod) rod->hide();
             if (gun) gun->hide();
-            SDL_Log("Player: equipped None");
         }
     }
 

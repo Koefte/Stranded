@@ -19,8 +19,8 @@ private:
     Player* target = nullptr;
     SDL_Renderer* renderer = nullptr;
 public:
-    FishProjectile(const Vector2& pos, const Vector2& sizeMultiplier, const char* spritePath, SDL_Renderer* renderer, int zIndex = 4)
-        : ICollidable(pos, sizeMultiplier, spritePath, renderer, false, zIndex), renderer(renderer),
+    FishProjectile(const Vector2& pos, const Vector2& sizeMultiplier, const char* spritePath,  SDL_Renderer* renderer, int zIndex = 4)
+        : ICollidable(pos, sizeMultiplier, spritePath, renderer, true, zIndex), renderer(renderer),
          GameObject(pos, sizeMultiplier, spritePath, renderer, zIndex)
     {
         setVisible(false);

@@ -23,7 +23,7 @@ class GameObject{
     GameObject* parent;
     std::vector<GameObject*> children;
     bool isVisible = true;
-    bool pendingDelete = false;
+    bool isDeleted = false;
     
 
 
@@ -138,9 +138,14 @@ class GameObject{
         isVisible = visible;
     }
 
+    bool isAlive() const {
+        return !isDeleted;
+    }
+
     // Mark object for deletion. Actual deletion happens during the main loop cleanup pass.
-    void markForDeletion() { pendingDelete = true; }
-    bool isMarkedForDeletion() const { return pendingDelete; }
+    void markForDeletion() { isDeleted = true; 
+                                hide(); }
+    bool isMarkedForDeletion() const { return isDeleted; }
 
     void setSprite(const char* spritePath, SDL_Renderer* renderer){
         SDL_Surface* surface = SDL_LoadBMP(spritePath);

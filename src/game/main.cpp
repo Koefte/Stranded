@@ -1,4 +1,4 @@
-#include <SDL.h> // TODO for tomorrow: network attacking fish make it hurtable and hurt the player
+#include <SDL.h> 
 #include <SDL_net.h>
 #include <iostream>
 #include <vector>
@@ -25,6 +25,7 @@
 #include "Text.hpp"
 #include "Lighthouse.hpp"
 #include "AttackingFish.hpp"
+#include "FishProjectile.hpp"
 #include <string>
 
 // Track whether TTF was successfully initialized
@@ -140,14 +141,17 @@ static Text* g_coinText = nullptr;
 
 
 // Networking
-static bool isHost = false;
-static UDPsocket udpSocket = nullptr;
+bool isHost = false;
+UDPsocket udpSocket = nullptr;
 static IPaddress hostAddr;
 static std::vector<IPaddress> clientAddrs;
 static uint32_t clientId = 0;
 static uint32_t inputSeq = 0;
 static std::unordered_map<uint32_t, Player*> remotePlayers;
 static bool clientBoardingRequest = false;
+// Entity id counters for host authority
+static uint32_t nextEntityId = 1;
+uint32_t nextProjectileId = 1;
 static bool clientBoatMovementToggle = false;
 static bool clientHookToggle = false;
 static uint8_t clientEquipRequest = 0; // 0=no request, 1=rod, 2=harpoon
@@ -191,6 +195,29 @@ struct HookArrivalPacket {
     uint32_t ownerId;
     float x;
     float y;
+};
+#pragma pack(pop)
+
+// AttackingFish spawn packet (host -> clients)
+#pragma pack(push, 1)
+struct AttackingFishSpawnPacket {
+    uint32_t magic; // 'AFSP'
+    uint32_t entityId;
+    uint32_t ownerId; // player who triggered/spawned this fish
+    float x;
+    float y;
+};
+#pragma pack(pop)
+
+// Fish projectile spawn packet (host -> clients)
+#pragma pack(push, 1)
+struct FishProjectileSpawnPacket {
+    uint32_t magic; // 'FPRJ'
+    uint32_t projectileId;
+    uint32_t ownerEntityId;
+    uint32_t targetPlayerId; // 0 = host, others = client IDs
+    float startX;
+    float startY;
 };
 #pragma pack(pop)
 
@@ -557,6 +584,39 @@ void onHurt(Player* p) {
     // Placeholder: you can add health loss or visual feedback here
 }
 
+// Helper: return client id for a Player pointer (0 = host, other values = remote client ids, 0xFFFFFFFF = unknown)
+uint32_t getPlayerId(Player* p) {
+    if (!p) return 0xFFFFFFFFu;
+    if (p == player) return clientId;
+    for (auto& [id, rp] : remotePlayers) {
+        if (rp == p) return id;
+    }
+    return 0xFFFFFFFFu;
+}
+
+// Host: broadcast projectile spawn to all clients
+void hostBroadcastFishProjectile(uint32_t projectileId, uint32_t ownerEntityId, uint32_t targetPlayerId, float startX, float startY) {
+    if (!isHost || !udpSocket || clientAddrs.empty()) return;
+    FishProjectileSpawnPacket pkt{};
+    pkt.magic = 0x4A525046; // 'FPRJ' packed
+    pkt.projectileId = projectileId;
+    pkt.ownerEntityId = ownerEntityId;
+    pkt.targetPlayerId = targetPlayerId;
+    pkt.startX = startX;
+    pkt.startY = startY;
+
+    UDPpacket* out = SDLNet_AllocPacket(sizeof(pkt));
+    if (!out) return;
+    std::memcpy(out->data, &pkt, sizeof(pkt));
+    out->len = sizeof(pkt);
+    for (auto& addr : clientAddrs) {
+        out->address = addr;
+        SDLNet_UDP_Send(udpSocket, -1, out);
+    }
+    SDLNet_FreePacket(out);
+    SDL_Log("Host: broadcast FishProjectile pid=%u owner=%u start=(%.2f,%.2f) targetPid=%u", projectileId, ownerEntityId, startX, startY, targetPlayerId);
+}
+
 void sendInputPacket() {
     if (!udpSocket || isHost) return;
     
@@ -604,9 +664,6 @@ void sendInputPacket() {
     }
     // If a local fishing minigame is active, suppress sending mouseDown to prevent server-side casts
     if (fishingMinigameActive) {
-        if (sendMouseDown) {
-            SDL_Log("Client: suppressing sendMouseDown due to active fishing minigame");
-        }
         sendMouseDown = 0;
     }
     lastMouseDown = mouseDown;
@@ -901,15 +958,54 @@ void onHook(const Vector2& pos) {
         float dy = hookPos.y - pos.y;
         float dist2 = dx*dx + dy*dy;
         if (dist2 < 4.0f * 4.0f) { // close enough to be our hook
-                    // Randomly select a minigame type (0=timed click, 1=tug, 2=attacking fish)
+                    // If there's already an attacking fish at the hook position, do not start a minigame
+            bool afPresent = false;
+            for (GameObject* obj : gameObjects) {
+                AttackingFish* afc = dynamic_cast<AttackingFish*>(obj);
+                if (!afc) continue;
+                Vector2 afPos = afc->getWorldPosition();
+                float dx2 = afPos.x - hookPos.x;
+                float dy2 = afPos.y - hookPos.y;
+                if (dx2*dx2 + dy2*dy2 < 16.0f * 16.0f) { afPresent = true; break; }
+            }
+            if (afPresent) {
+                SDL_Log("Hooked existing attacking fish at (%.2f,%.2f) - skipping minigame", hookPos.x, hookPos.y);
+                if (player && player->getFishingProjectile()) player->getFishingProjectile()->retract();
+                // If host, broadcast hook arrival so clients retract
+                if (isHost && udpSocket && !clientAddrs.empty()) hostBroadcastHookArrival(clientId, hookPos);
+                return;
+            }
+
+            // Randomly select a minigame type (0=timed click, 1=tug, 2=attacking fish)
             std::uniform_int_distribution<int> mgDist(0,2);
             int pick = mgDist(fishingMinigameRng);
             // If attacking fish was chosen, spawn an attacking fish GameObject immediately and do not start a minigame
             if (pick == 2) {
-                // Spawn AttackingFish which will throw a chasing projectile
-                AttackingFish* af = new AttackingFish(pos, g_renderer);
-                gameObjects.push_back(af);
-                SDL_Log("Spawned AttackingFish at (%.2f,%.2f)", pos.x, pos.y);
+                // Host-authoritative spawn: host creates and broadcasts; clients wait for spawn packet
+                if (isHost || !udpSocket) {
+                    uint32_t eid = isHost ? nextEntityId++ : 0;
+                    AttackingFish* af = new AttackingFish(hookPos, g_renderer, eid, clientId);
+                    gameObjects.push_back(af);
+                    SDL_Log("Spawned AttackingFish at (%.2f,%.2f) eid=%u owner=%u", hookPos.x, hookPos.y, eid, clientId);
+                    // If running as host, broadcast spawn packet to clients
+                    if (isHost && udpSocket && !clientAddrs.empty()) {
+                        AttackingFishSpawnPacket pkt{};
+                        pkt.magic = 0x50534641; // 'AFSP' packed
+                        pkt.entityId = eid;
+                        pkt.ownerId = clientId;
+                        pkt.x = hookPos.x;
+                        pkt.y = hookPos.y;
+                        UDPpacket* out = SDLNet_AllocPacket(sizeof(pkt));
+                        std::memcpy(out->data, &pkt, sizeof(pkt));
+                        out->len = sizeof(pkt);
+                        for (auto& addr : clientAddrs) {
+                            out->address = addr;
+                            SDLNet_UDP_Send(udpSocket, -1, out);
+                        }
+                        SDLNet_FreePacket(out);
+                    }
+                }
+                player->getFishingProjectile()->retract(); // retract rod immediately
                 return; // no minigame
             }
 
@@ -964,8 +1060,85 @@ void onHook(const Vector2& pos) {
         }
     }
 
+    // Otherwise this might correspond to a remote player's hook arriving - find matching remote
+    for (auto& [id, remote] : remotePlayers) {
+        if (!remote) continue;
+        if (!remote->getFishingProjectile() || !remote->getFishingProjectile()->getIsActive()) continue;
+        Vector2 hookPos = remote->getFishingProjectile()->getWorldPosition();
+        float dx = hookPos.x - pos.x;
+        float dy = hookPos.y - pos.y;
+        float dist2r = dx*dx + dy*dy;
+        if (dist2r < 4.0f * 4.0f) {
+            // We found the remote whose hook attracted
+            // First, ensure there isn't already an AttackingFish near this hook (do not spawn duplicate)
+            bool afPresent = false;
+            for (GameObject* obj : gameObjects) {
+                AttackingFish* afc = dynamic_cast<AttackingFish*>(obj);
+                if (!afc) continue;
+                Vector2 afPos = afc->getWorldPosition();
+                float dx2 = afPos.x - pos.x; float dy2 = afPos.y - pos.y;
+                if (dx2*dx2 + dy2*dy2 < 16.0f * 16.0f) { afPresent = true; break; }
+            }
+            if (afPresent) {
+                SDL_Log("Remote hook at (%.2f,%.2f) already has AttackingFish, retracting hook and not starting minigame", pos.x, pos.y);
+                remote->getFishingProjectile()->retract();
+                if (isHost && udpSocket && !clientAddrs.empty()) hostBroadcastHookArrival(id, pos);
+                return;
+            }
+
+            std::uniform_int_distribution<int> mgDist(0,2);
+            int pick = mgDist(fishingMinigameRng);
+            if (pick == 2) {
+                // Host-authoritative spawn: host creates and broadcasts; clients wait for spawn packet
+                if (isHost || !udpSocket) {
+                    uint32_t eid = isHost ? nextEntityId++ : 0;
+                    AttackingFish* af = new AttackingFish(pos, g_renderer, eid, id);
+                    gameObjects.push_back(af);
+                    SDL_Log("Spawned AttackingFish for remote %u at (%.2f,%.2f) eid=%u owner=%u", id, pos.x, pos.y, eid, id);
+                    // If running as host, broadcast spawn packet to clients
+                    if (isHost && udpSocket && !clientAddrs.empty()) {
+                        AttackingFishSpawnPacket pkt{};
+                        pkt.magic = 0x50534641; // 'AFSP'
+                        pkt.entityId = eid;
+                        pkt.ownerId = id;
+                        pkt.x = pos.x;
+                        pkt.y = pos.y;
+                        UDPpacket* out = SDLNet_AllocPacket(sizeof(pkt));
+                        std::memcpy(out->data, &pkt, sizeof(pkt));
+                        out->len = sizeof(pkt);
+                        for (auto& addr : clientAddrs) {
+                            out->address = addr;
+                            SDLNet_UDP_Send(udpSocket, -1, out);
+                        }
+                        SDLNet_FreePacket(out);
+                    }
+                }
+                // Retract remote hook on host and notify clients about arrival
+                remote->getFishingProjectile()->retract();
+                if (isHost && udpSocket && !clientAddrs.empty()) hostBroadcastHookArrival(id, pos);
+                return;
+            } else {
+                // Not an attacking fish: treat as normal spawn for remote - retract and optionally spawn a free fish
+                remote->getFishingProjectile()->retract();
+                if (isHost && udpSocket && !clientAddrs.empty()) hostBroadcastHookArrival(id, pos);
+                if (g_renderer) {
+                    GameObject* caught = new GameObject(pos, {2.0f,2.0f}, "./sprites/fish.bmp", g_renderer, LAYER_PARTICLE);
+                    gameObjects.push_back(caught);
+                    fishesMovingToPlayer.push_back(caught);
+                    SDL_Log("Spawned free fish at (%.2f,%.2f) for remote %u", pos.x, pos.y, id);
+                }
+                return;
+            }
+        }
+    }
+
     // Otherwise spawn a free fish in the world (remote player or missed minigame)
-    
+    if (g_renderer) {
+        GameObject* freeFish = new GameObject(pos, {2.0f,2.0f}, "./sprites/fish.bmp", g_renderer, LAYER_PARTICLE);
+        gameObjects.push_back(freeFish);
+        fishesMovingToPlayer.push_back(freeFish);
+        SDL_Log("Spawned free fish at (%.2f,%.2f) (no matching hook)", pos.x, pos.y);
+    }
 } 
 
 
@@ -1815,6 +1988,47 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
+                // Check for AttackingFish spawn packet
+                if (in->len >= sizeof(AttackingFishSpawnPacket)) {
+                    AttackingFishSpawnPacket ap;
+                    std::memcpy(&ap, in->data, sizeof(AttackingFishSpawnPacket));
+                    if (ap.magic == 0x50534641) { // 'AFSP'
+                        // Spawn the attacking fish locally with the provided entity id
+                        Vector2 spawn{ap.x, ap.y};
+                        AttackingFish* af = new AttackingFish(spawn, g_renderer, ap.entityId);
+                        gameObjects.push_back(af);
+                        SDL_Log("Client: Received AttackingFish spawn eid=%u owner=%u at (%.2f,%.2f)", ap.entityId, ap.ownerId, ap.x, ap.y);
+                        // Spawn the attacking fish locally with the provided entity id and owner
+                        spawn = {ap.x, ap.y};
+                        af = new AttackingFish(spawn, g_renderer, ap.entityId, ap.ownerId);
+                        gameObjects.push_back(af);
+                        continue; // processed
+                    }
+                }
+
+                // Check for fish projectile spawn packet
+                if (in->len >= sizeof(FishProjectileSpawnPacket)) {
+                    FishProjectileSpawnPacket fpkt;
+                    std::memcpy(&fpkt, in->data, sizeof(FishProjectileSpawnPacket));
+                    if (fpkt.magic == 0x4A525046) { // 'FPRJ'
+                        // Find target player by id
+                        Player* targetPlayer = nullptr;
+                        if (fpkt.targetPlayerId == clientId) targetPlayer = player;
+                        else targetPlayer = getOrCreateRemotePlayer(fpkt.targetPlayerId);
+                        Vector2 start{fpkt.startX, fpkt.startY};
+                        // Create projectile locally to match host spawn
+                        FishProjectile* fpr = new FishProjectile(start, {1.0f,1.0f}, "./sprites/FishProjectile.bmp", g_renderer, LAYER_PARTICLE);
+                        if (targetPlayer) fpr->fire(start, targetPlayer);
+                        else {
+                            // If target missing, fire toward start (will expire)
+                            fpr->fire(start, player);
+                        }
+                        gameObjects.push_back(fpr);
+                        SDL_Log("Client: Received FishProjectile spawn pid=%u owner=%u start=(%.2f,%.2f) targetPid=%u", fpkt.projectileId, fpkt.ownerEntityId, fpkt.startX, fpkt.startY, fpkt.targetPlayerId);
+                        continue; // processed
+                    }
+                }
+
                 // Check for chunk packet first
                 if (in->len >= sizeof(ChunkPacket)) {
                     ChunkPacket cp;
@@ -2003,10 +2217,24 @@ int main(int argc, char* argv[]) {
             std::vector<ICollidable*> colliders;
             for(GameObject* obj: gameObjects){
                 if(ICollidable* collider = dynamic_cast<ICollidable*>(obj)){
+                    if(!collider->isAlive()) continue;
                     colliders.push_back(collider);
                 }
             }
 
+            std::set<std::pair<ICollidable*, ICollidable*>> collisionPairsToRemove;
+
+            for(auto pair : collisionPairs){
+                if(!pair.first->isAlive() || !pair.second->isAlive()){
+                    // One of the colliders is dead, remove the pair
+                    collisionPairsToRemove.insert(pair);
+                }
+            }
+
+            for (const auto& pair : collisionPairsToRemove) {
+                collisionPairs.erase(pair);
+            }
+            collisionPairsToRemove.clear();
 
             for(size_t i = 0; i < colliders.size(); ++i){
                 for(size_t j = i + 1; j < colliders.size(); ++j){
@@ -2109,15 +2337,8 @@ int main(int argc, char* argv[]) {
             fishesMovingToPlayer = std::move(remaining);
         }
 
-        for (auto it = gameObjects.begin(); it != gameObjects.end(); ) {
-            GameObject* obj = *it;
-            if (obj->isMarkedForDeletion()) {
-                delete obj;
-                it = gameObjects.erase(it);
-            } else {
-                ++it;
-            }
-        }
+        // Two-phase cleanup: first gather, then remove from list, then delete to avoid use-after-free
+       
 
         // Ensure inventory icons are only visible when the inventory UI is open
         for (int si = 0; si < INV_COLS * INV_ROWS; ++si) {
