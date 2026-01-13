@@ -1,4 +1,4 @@
-#include <SDL.h>
+#include <SDL.h> // TODO for tomorrow: network attacking fish make it hurtable and hurt the player
 #include <SDL_net.h>
 #include <iostream>
 #include <vector>
@@ -24,17 +24,18 @@
 #include <SDL_ttf.h>
 #include "Text.hpp"
 #include "Lighthouse.hpp"
+#include "AttackingFish.hpp"
 #include <string>
 
 // Track whether TTF was successfully initialized
 static bool ttfInitialized = false;
 
 //GAME
-static std::vector<GameObject*> gameObjects;
-static Camera* camera;
-static Player* player;
-static Boat* boat;
-static SDL_Renderer* g_renderer = nullptr;
+std::vector<GameObject*> gameObjects;
+Camera* camera;
+Player* player = nullptr;
+Boat* boat;
+SDL_Renderer* g_renderer = nullptr;
 static std::set<std::pair<int,int>> generatedChunks;
 static const int CHUNK_SIZE_PX = 512; // world-space pixels per chunk
 static bool navigationUIActive = false;
@@ -92,7 +93,7 @@ static float fishingMinigameWindowStart = 0.40f;
 static float fishingMinigameWindowEnd = 0.60f;
 
 // Tug-of-the-deep state
-enum MinigameType { MINIGAME_TIMED_CLICK = 0, MINIGAME_TUG_OF_THE_DEEP = 1 };
+enum MinigameType { MINIGAME_TIMED_CLICK = 0, MINIGAME_TUG_OF_THE_DEEP = 1, MINIGAME_ATTACKING_FISH = 2 };
 static MinigameType fishingMinigameType = MINIGAME_TIMED_CLICK;
 static float tugProgress = 0.5f; // 0..1, player wins when low
 static float tugTension = 0.0f; // 0..1, >=1 => fail
@@ -547,6 +548,15 @@ float hitBoxDistance(std::vector<Rectangle> shapeA, std::vector<Rectangle> shape
 // Host broadcast for authoritative hook arrivals
 void hostBroadcastHookArrival(uint32_t ownerId, const Vector2& pos);
 
+// Called when a player is hurt by an attacking fish projectile
+void onHurt(Player* p) {
+    if (!p) return;
+    SDL_Log("Player hurt by attacking fish projectile!");
+    // Play hurt sound if available
+    SoundManager::instance().playSound("hurt", 0, MIX_MAX_VOLUME);
+    // Placeholder: you can add health loss or visual feedback here
+}
+
 void sendInputPacket() {
     if (!udpSocket || isHost) return;
     
@@ -891,9 +901,18 @@ void onHook(const Vector2& pos) {
         float dy = hookPos.y - pos.y;
         float dist2 = dx*dx + dy*dy;
         if (dist2 < 4.0f * 4.0f) { // close enough to be our hook
-            // Randomly select a minigame type
-            std::uniform_int_distribution<int> mgDist(0,1);
+                    // Randomly select a minigame type (0=timed click, 1=tug, 2=attacking fish)
+            std::uniform_int_distribution<int> mgDist(0,2);
             int pick = mgDist(fishingMinigameRng);
+            // If attacking fish was chosen, spawn an attacking fish GameObject immediately and do not start a minigame
+            if (pick == 2) {
+                // Spawn AttackingFish which will throw a chasing projectile
+                AttackingFish* af = new AttackingFish(pos, g_renderer);
+                gameObjects.push_back(af);
+                SDL_Log("Spawned AttackingFish at (%.2f,%.2f)", pos.x, pos.y);
+                return; // no minigame
+            }
+
             fishingMinigameType = (pick == 0) ? MINIGAME_TIMED_CLICK : MINIGAME_TUG_OF_THE_DEEP;
 
             // Initialize common minigame parameters
@@ -2090,7 +2109,15 @@ int main(int argc, char* argv[]) {
             fishesMovingToPlayer = std::move(remaining);
         }
 
-
+        for (auto it = gameObjects.begin(); it != gameObjects.end(); ) {
+            GameObject* obj = *it;
+            if (obj->isMarkedForDeletion()) {
+                delete obj;
+                it = gameObjects.erase(it);
+            } else {
+                ++it;
+            }
+        }
 
         // Ensure inventory icons are only visible when the inventory UI is open
         for (int si = 0; si < INV_COLS * INV_ROWS; ++si) {
